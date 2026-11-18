@@ -1,0 +1,109 @@
+name: model-showcase
+
+on:
+  pull_request:
+    paths:
+      - scripts/showcase/ci-model.txt
+
+permissions:
+  contents: read
+
+jobs:
+  showcase:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: cvp
+    if: >-
+      vars.AI_GATE_CI == 'true' &&
+      github.triggering_actor == 'parthjeet' &&
+      ( github.event_name == 'workflow_dispatch' ||
+        ( github.event_name == 'pull_request' &&
+          github.event.pull_request.user.login == 'parthjeet' &&
+          github.event.pull_request.head.repo.full_name == github.repository ) )
+    env:
+      UV_VERSION: "0.13.9"
+      UV_SHA256: "a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5"
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - name: Check key dates
+        env:
+          CVP_KEY_DATE: ${{ vars.CVP_KEY_DATE }}
+        run: |
+          today="$(date -u +%F)"
+          if [[ ! "$today" < "2026-12-14" ]]; then
+            echo "ERROR: static keys end on 2026-12-14. No paid run."
+            exit 1
+          fi
+          if [[ ! "$CVP_KEY_DATE" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || ! date -u -d "$CVP_KEY_DATE" +%F >/dev/null 2>&1; then
+            echo "ERROR: CVP_KEY_DATE is not set."
+            exit 1
+          fi
+          oldest="$(date -u -d "$today - 6 days" +%F)"
+          if [[ "$CVP_KEY_DATE" < "$oldest" || "$CVP_KEY_DATE" > "$today" ]]; then
+            echo "ERROR: the key is older than 7 days. Replace it and update CVP_KEY_DATE."
+            exit 1
+          fi
+
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Pick model
+        id: pick
+        run: |
+          value="$(tr -d '[:space:]' < scripts/showcase/ci-model.txt)"
+          if [ "$value" = "claude-fable-5-2" ]; then
+            echo "model=claude-fable-5-2" >> "$GITHUB_OUTPUT"
+          elif [ "$value" = "claude-mythos-5-2" ]; then
+            echo "model=claude-mythos-5-2" >> "$GITHUB_OUTPUT"
+          else
+            echo "ERROR: ci-model.txt must name claude-fable-5-2 or claude-mythos-5-2."
+            exit 1
+          fi
+
+      - name: Install uv
+        run: |
+          mkdir -p "$RUNNER_TEMP/uv"
+          cd "$RUNNER_TEMP/uv"
+          curl -sSfL -o uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"
+          echo "${UV_SHA256}  uv.tar.gz" | sha256sum -c -
+          tar -xzf uv.tar.gz
+          mkdir -p "$HOME/.local/bin"
+          install -m 0755 uv-x86_64-unknown-linux-gnu/uv "$HOME/.local/bin/uv"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/uv" --version
+
+      - name: Create venv and install pinned packages
+        run: |
+          uv venv --python 3.12 "$RUNNER_TEMP/showcase-venv"
+          uv pip install --python "$RUNNER_TEMP/showcase-venv/bin/python" --require-hashes -r ai-security-gate/requirements.txt
+
+      - name: Run model comparison
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CVP_ACCESS_NOTE: ${{ secrets.CVP_ACCESS_NOTE }}
+          MODEL: ${{ steps.pick.outputs.model }}
+        run: |
+          if [ -z "$CVP_ACCESS_NOTE" ]; then
+            echo "ERROR: CVP_ACCESS_NOTE is not set."
+            exit 1
+          fi
+          VENV="$RUNNER_TEMP/showcase-venv"
+          rc=0
+          "$VENV/bin/python" scripts/compare_models.py --run --models "$MODEL" --tasks R3,R4 --repeats 3 --access-note "$CVP_ACCESS_NOTE" || rc=$?
+          echo "compare_models.py exit code: $rc"
+
+      - name: Verdict
+        env:
+          MODEL: ${{ steps.pick.outputs.model }}
+        run: python3 scripts/showcase/ci_verdict.py reports/showcase/summary.json "$MODEL"
+
+      - name: Upload summary
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: model-showcase-summary
+          path: reports/showcase/summary.json
+          if-no-files-found: ignore
+          retention-days: 90
