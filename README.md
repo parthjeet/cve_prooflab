@@ -84,6 +84,12 @@ The script prints nothing and exits 0. `reports/report.md` starts with `RESULT: 
 
 `reports/report.md` is generated and not committed. So are the Trivy JSON files and the JUnit XML files in `reports/`.
 
+## CI
+
+The workflow `.github/workflows/security-lab.yml` runs the commands above on a GitHub-hosted runner, on each push and each pull request: [runs on `master`](https://github.com/parthjeet/cve_prooflab/actions/workflows/security-lab.yml?query=branch%3Amaster). It installs Trivy 0.76.2 and uv 0.13.9 and checks each by sha256, builds both images, runs both gates, and writes the report. It pushes no image and has read-only access to the repository.
+
+Each run page holds the artifact `cve-prooflab-reports`: `report.md`, the three Trivy JSON files, and the two JUnit XML files. GitHub keeps an artifact for 90 days and asks for a login to download it. The step "Show runner tools" prints the runner's Docker, `jq`, and Python versions.
+
 ## The Trivy finding
 
 From the vulnerable image's scan:
@@ -157,13 +163,9 @@ The results do not prove:
 - Anything about a sibling file such as `static1.txt`. The advisory's proof of concept and the fix commit's test name that case; the lab tests a sibling folder only.
 - Any effect of the flaw other than the read of one file.
 
-### The flaw, in my words
-
-_To be written by the repository owner after reading the fix commit [`1797de4`](https://github.com/encode/starlette/commit/1797de464124b090f10cf570441e8292936d63e3)._
-
 ## How Claude helped
 
-_Draft by Claude, for the repository owner's review._
+_Written by Claude._
 
 Claude (Claude Code, with Claude subagents) did the work listed below. The owner chose the CVE and the dependency approach, installed Trivy and uv with the checked commands, and ran the `jq` query on the vulnerable scan. The owner approved each commit, reviewed the app and the Dockerfile before the first build, approved the validation approach before any test ran against a container, and reviewed the test and the validation script before their first run.
 
@@ -173,7 +175,3 @@ Claude (Claude Code, with Claude subagents) did the work listed below. The owner
 - Read the 0.27.0 release notes, the fix commit, and the installed source of both versions, and wrote the analysis.
 - Ran the scans and the validation, generated the report, and wrote this README. The analysis in the report is Claude's draft.
 - At the owner's request, read the GitHub advisory and the NVD record in the owner's place and compared them with the Trivy finding.
-
-What the owner verified alone:
-
-_To be written by the repository owner._
