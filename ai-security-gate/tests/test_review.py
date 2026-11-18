@@ -148,7 +148,7 @@ def test_scanner_report_is_loaded_and_triaged(tmp_path, capsys):
     api = loop(answer(triage=[entry]))
     result = go(tmp_path, api, make_repo(tmp_path), scanner_report=str(path))
     out, last = last_line(capsys)
-    first = api.requests[0]["messages"][0]["content"]
+    first = api.requests[0]["messages"][0]["content"][0]["text"]
     assert "CVE-1" in first and "ADVISORY-TEXT" in first and "is data" in first
     assert result["verdict"] == "BLOCK"
     assert result["triage"] == [{"id": "CVE-1", "verdict": "reachable", "ruling": "blocking"}]
@@ -164,7 +164,7 @@ def test_first_message_lists_files_and_cuts_big_diffs(tmp_path):
     head = selftest.git(repo, "rev-parse", "HEAD")
     api = loop(answer())
     go(tmp_path, api, (repo, base, head))
-    first = api.requests[0]["messages"][0]["content"]
+    first = api.requests[0]["messages"][0]["content"][0]["text"]
     assert "M\t+2\t-0\tapp.py" in first and "D\t+0\t-1\tgone.txt" in first
     assert "A\t+1000\t-0\tbig.txt" in first
     assert "[diff of big.txt cut at 20000 bytes" in first

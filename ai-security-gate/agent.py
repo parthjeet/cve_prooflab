@@ -70,7 +70,8 @@ def run_agent(client, *, system, first_message, toolbox, config, model, answer_s
     system_blocks = [{"type": "text", "text": system, "cache_control": CACHE}]
     tool_defs = [*tools.TOOL_DEFINITIONS]
     tool_defs[-1] = {**tool_defs[-1], "cache_control": CACHE}
-    messages = [{"role": "user", "content": first_message}]
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": first_message, "cache_control": CACHE}]}]
 
     def fail(message, request_id=None):
         result.error = message

@@ -5,6 +5,9 @@
 fail_on = "high"
 min_confidence = "medium"
 triage_min_severity = "medium"
+# This repository's lab change is large (about 74,000 tokens of diff); a review
+# resends it with each request, so the default 400,000 is too low.
+max_input_tokens = 800000
 
 [[suppress]]
 path = "app/requirements-vulnerable.*"

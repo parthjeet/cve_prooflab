@@ -100,6 +100,8 @@ def test_request_shape(box):
     assert body["model"] == MODEL and body["max_tokens"] == gate.Config().max_tokens
     assert body["system"] == [{"type": "text", "text": "sys {x}",
                                "cache_control": {"type": "ephemeral"}}]
+    assert body["messages"] == [{"role": "user", "content": [
+        {"type": "text", "text": "first", "cache_control": {"type": "ephemeral"}}]}]
     assert body["tools"][-1]["cache_control"] == {"type": "ephemeral"}
     assert all("cache_control" not in t for t in body["tools"][:-1])
     assert [t["name"] for t in body["tools"]] == [t["name"] for t in tools.TOOL_DEFINITIONS]
