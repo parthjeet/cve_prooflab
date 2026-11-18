@@ -1,6 +1,6 @@
 # Analysis of CVE-2023-29159 in the lab
 
-This file is the hand-written input of `scripts/generate_report.py`. It keeps hypotheses apart from scanner findings and test results. Figures that a scan or a test produces are not typed here; the report reads them from `reports/` at run time.
+This file is the analysis input of `scripts/generate_report.py`. Claude drafted it; the script copies it and does not generate it. It keeps hypotheses apart from scanner findings and test results. Figures that a scan or a test produces are not typed here; the report reads them from `reports/` at run time.
 
 ## Observed facts
 
@@ -52,13 +52,27 @@ This file is the hand-written input of `scripts/generate_report.py`. It keeps hy
 
 ## Checks
 
-- **H1.** Observed: `app/app.py` mounts `StaticFiles` and nothing else, and the installed `0.26.1` source holds the `commonprefix` check in `lookup_path`. A 200 response for `/static/index.html` shows the request reached `StaticFiles`. Checked again in Phase 4 by `test_public_file_is_served` on both images.
-- **H2.** Phase 4, in containers: `test_sibling_folder_is_not_served` fails on the vulnerable image (status 200 with the marker text) and passes on the patched image (404). `test_unrelated_folder_is_not_served` passes on both (404). If `other/` were readable, H2 would be wrong.
-- **H3.** Phase 4: a 200 for the sibling request on the vulnerable image can only happen if `..` reached the app. The host run already showed this for `uvicorn==0.54.0`; Phase 4 repeats it inside the image.
-- **H4.** The requirements files differ only in the `starlette` pin. The package diff above shows the fix is the only change in `staticfiles.py`. Inferred from that diff, not tested: no other change runs when the lab app serves a request. Phase 4 shows the sibling request changes from 200 to 404 between the two images, and the other two requests do not change.
+- **H1.** Observed: `app/app.py` mounts `StaticFiles` and nothing else, and the installed `0.26.1` source holds the `commonprefix` check in `lookup_path`. A 200 response for `/static/index.html` shows the request reached `StaticFiles`. Checked again in the container validation by `test_public_file_is_served` on both images.
+- **H2.** The container validation: `test_sibling_folder_is_not_served` fails on the vulnerable image (status 200 with the marker text) and passes on the patched image (404). `test_unrelated_folder_is_not_served` passes on both (404). If `other/` were readable, H2 would be wrong.
+- **H3.** The container validation: a 200 for the sibling request on the vulnerable image can only happen if `..` reached the app. The host run already showed this for `uvicorn==0.54.0`; the container validation repeats it inside the image.
+- **H4.** The requirements files differ only in the `starlette` pin. The package diff above shows the fix is the only change in `staticfiles.py`. Inferred from that diff, not tested: no other change runs when the lab app serves a request. The container validation shows the sibling request changes from 200 to 404 between the two images, and the other two requests do not change.
 
 ## Remediation
 
 - Upgrade `starlette` to `0.27.0` or later. The lab pins `0.27.0` because it is the first fixed version: it proves the fix with the smallest change between the two images.
 - `0.27.0` is not the version to deploy. The patched scan still lists later `starlette` advisories, and the report counts them from `reports/trivy-patched.json`. A real service should move to the latest supported release.
 - If an upgrade must wait, a stopgap follows from H2: keep no file or folder next to a served folder whose name starts with that folder's name. The lab tests this on one layout only (`other/` is not served on `0.26.1`). It is not a fix.
+
+## Limitations
+
+- `starlette==0.27.0` still carries later advisories. It is the pin that proves the fix, not a version to deploy. The count under Remediation and verification comes from the patched scan.
+- Other packages and the base image add findings of their own. The scan gate checks one vulnerability ID only; it does not judge the image as a whole.
+- The test covers one request pattern on one folder layout: a sibling folder named `static_disallow` next to `static`.
+- The lab does not test a sibling file such as `static1.txt`, which the advisory's proof of concept and the fix commit's test both name.
+- The lab tests no effect of the flaw other than the read of one marker file.
+- H4 is partly inferred: that no other change in `0.27.0` runs when the app serves a request rests on the package diff, not on a test.
+- Trivy findings other than CVE-2023-29159 change as the Trivy database updates. The report records the database date.
+- The first evidence came from the host (Python 3.12.3); the container results (Python 3.12.16) match it, but the two runs used different Python builds.
+- Publishing the port on `127.0.0.1` stops other machines from reaching the app. It does not stop the container from making outbound connections. The app makes none.
+- The JUnit XML records no image ID. The report prints the image IDs of the scanned images only. It does not show that the tested images are the scanned images; one CI job that builds, scans, and tests them gives that link.
+- The report script copies the analysis sections unchanged from `scripts/report_analysis.md`; Claude drafted them. The script rechecks one fact in them against the scans: which `starlette` findings differ between the two images.
