@@ -1,0 +1,81 @@
+name: AI security gate
+description: Review a change with a Claude model and block on findings. Linux x86_64 runners only.
+
+inputs:
+  base:
+    description: Base commit SHA of the change.
+    default: ${{ github.event.pull_request.base.sha }}
+  head:
+    description: Head commit SHA of the change.
+    default: ${{ github.event.pull_request.head.sha }}
+  config-path:
+    description: Path of the config file in the checkout.
+    default: .ai-security-gate.toml
+  scanner-report:
+    description: Path of a Trivy JSON report. Empty means no scanner report.
+    default: ""
+  evidence-path:
+    description: Where to write the evidence file.
+    default: ai-security-gate-evidence.json
+  summary-path:
+    description: Where to write the summary file.
+    default: ai-security-gate-summary.json
+  print-details:
+    description: Print model-written details to the log ("true" or "false").
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      env:
+        UV_VERSION: "0.13.9"
+        # sha256 of uv-x86_64-unknown-linux-gnu.tar.gz 0.13.9, checked the same way as in security-lab.yml.
+        UV_SHA256: "a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5"
+      run: |
+        mkdir -p "$RUNNER_TEMP/uv"
+        cd "$RUNNER_TEMP/uv"
+        curl -sSfL -o uv.tar.gz "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-x86_64-unknown-linux-gnu.tar.gz"
+        echo "${UV_SHA256}  uv.tar.gz" | sha256sum -c -
+        tar -xzf uv.tar.gz
+        mkdir -p "$HOME/.local/bin"
+        install -m 0755 uv-x86_64-unknown-linux-gnu/uv "$HOME/.local/bin/uv"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        "$HOME/.local/bin/uv" --version
+
+    - name: Install requirements
+      shell: bash
+      env:
+        # uv must use the runner's Python 3.12 and must not download one.
+        UV_PYTHON_DOWNLOADS: never
+      run: |
+        uv venv --python 3.12 "$RUNNER_TEMP/ai-gate-venv"
+        uv pip install --python "$RUNNER_TEMP/ai-gate-venv/bin/python" --require-hashes -r "$GITHUB_ACTION_PATH/requirements.txt"
+
+    - name: Run AI security gate
+      shell: bash
+      env:
+        IN_BASE: ${{ inputs.base }}
+        IN_HEAD: ${{ inputs.head }}
+        IN_CONFIG_PATH: ${{ inputs.config-path }}
+        IN_SCANNER_REPORT: ${{ inputs.scanner-report }}
+        IN_EVIDENCE_PATH: ${{ inputs.evidence-path }}
+        IN_SUMMARY_PATH: ${{ inputs.summary-path }}
+        IN_PRINT_DETAILS: ${{ inputs.print-details }}
+      run: |
+        args=(
+          --repo "$GITHUB_WORKSPACE"
+          --base "$IN_BASE"
+          --head "$IN_HEAD"
+          --config-path "$IN_CONFIG_PATH"
+          --evidence-path "$IN_EVIDENCE_PATH"
+          --summary-path "$IN_SUMMARY_PATH"
+        )
+        if [ -n "$IN_SCANNER_REPORT" ]; then
+          args+=(--scanner-report "$IN_SCANNER_REPORT")
+        fi
+        if [ "$IN_PRINT_DETAILS" = "true" ]; then
+          args+=(--print-details)
+        fi
+        "$RUNNER_TEMP/ai-gate-venv/bin/python" "$GITHUB_ACTION_PATH/review.py" "${args[@]}"
