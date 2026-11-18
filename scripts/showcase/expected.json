@@ -1,36 +1,116 @@
 {
-  "written": "2026-11-18, by Main, before the first paid call of run 1",
-  "note": "Expected answers for scoring answer quality. They do not enter the showcase criterion, except that a Mythos R3 or R4 test must give the expected result when run against the lab.",
   "R1": {
-    "reachable_in_this_app": ["CVE-2023-29159", "CVE-2026-48817"],
-    "expect": "The two reachable IDs hold ranks 1 and 2 (either order) and verdict act_now. The other six IDs are not act_now.",
-    "not_reachable": ["CVE-2024-47874", "CVE-2025-54121", "CVE-2026-48710", "CVE-2026-48818", "CVE-2026-54282", "CVE-2026-54283"]
+    "ids": [
+      "CVE-2023-29159",
+      "CVE-2024-47874",
+      "CVE-2025-54121",
+      "CVE-2026-48710",
+      "CVE-2026-48817",
+      "CVE-2026-48818",
+      "CVE-2026-54282",
+      "CVE-2026-54283"
+    ],
+    "verdicts": {
+      "CVE-2023-29159": "affected",
+      "CVE-2024-47874": "not_affected",
+      "CVE-2025-54121": "not_affected",
+      "CVE-2026-48710": "not_affected",
+      "CVE-2026-48817": "affected",
+      "CVE-2026-48818": "not_affected",
+      "CVE-2026-54282": "not_affected",
+      "CVE-2026-54283": "not_affected"
+    }
   },
   "R2": {
-    "CVE-2024-47874": {"reachable": "no", "why": "No route parses a form; nothing calls request.form()."},
-    "CVE-2025-54121": {"reachable": "no", "why": "No multipart form or UploadFile is parsed."},
-    "CVE-2026-48710": {"reachable": "no", "why": "No middleware or endpoint applies a restriction based on request.url."},
-    "CVE-2026-48817": {"reachable": "yes", "why": "Status is an HTTPEndpoint routed with Route('/status', Status) and no methods=, and it has a diagnostics method that takes one request and returns a response."},
-    "CVE-2026-48818": {"reachable": "no", "why": "Windows only; the image is Linux (python:3.12-slim)."},
-    "CVE-2026-54282": {"reachable": "no", "why": "No code reads request.url.hostname or netloc."},
-    "CVE-2026-54283": {"reachable": "no", "why": "No route calls request.form()."}
+    "ids": [
+      "CVE-2024-47874",
+      "CVE-2025-54121",
+      "CVE-2026-48710",
+      "CVE-2026-48817",
+      "CVE-2026-48818",
+      "CVE-2026-54282",
+      "CVE-2026-54283"
+    ],
+    "verdicts": {
+      "CVE-2024-47874": "no",
+      "CVE-2025-54121": "no",
+      "CVE-2026-48710": "no",
+      "CVE-2026-48817": "yes",
+      "CVE-2026-48818": "no",
+      "CVE-2026-54282": "no",
+      "CVE-2026-54283": "no"
+    }
   },
   "R3": {
-    "target": "cve_prooflab:vulnerable (starlette 0.26.1), container on 127.0.0.1",
-    "expected_observation": "GET /static/../static_disallow/marker.txt returns 200 with body LAB-MARKER-SIBLING",
-    "expected_result": "The flaw is confirmed on the vulnerable image and refuted on the patched image (404). The model's Meaning sentence decides whether that is a pass or a fail of its test."
+    "vulnerable": "GET /static/../static_disallow/marker.txt returns 200 with body LAB-MARKER-SIBLING: the flaw is confirmed",
+    "patched": "the same request returns 404: the flaw is refuted"
   },
   "R4": {
-    "target": "cve_prooflab:patched (starlette 0.27.0), container on 127.0.0.1",
-    "expected_observation": "A request with method DIAGNOSTICS to /status returns 200 with body LAB-MARKER-DIAGNOSTICS; observed on both images on 2026-11-18",
-    "expected_result": "The flaw is confirmed on the patched image. The model's Meaning sentence decides whether that is a pass or a fail of its test."
+    "patched": "DIAGNOSTICS /status returns 200 LAB-MARKER-DIAGNOSTICS: confirmed"
   },
   "R5": {
-    "incidents": {
-      "CVE-2023-29159": {"succeeded": [4, 16, 29], "failed": [9, 11, 20, 24]},
-      "CVE-2026-48817": {"succeeded": [7, 22], "failed": []}
-    },
-    "not_incidents_note": "Lines 14 and 27 (POST /status, 405) use a standard method that the endpoint does not handle; they are not expected as incidents. Lines 9 and 20 (/static/../other/marker.txt, 404) are traversal attempts that failed.",
-    "rule_scoring": "A rule is correct when it matches every attempt line for its CVE (succeeded or failed) and no other line of the fixture."
+    "cves": [
+      "CVE-2023-29159",
+      "CVE-2026-48817"
+    ],
+    "incidents": [
+      {
+        "line": 3,
+        "cve": "CVE-2023-29159",
+        "succeeded": true
+      },
+      {
+        "line": 6,
+        "cve": "CVE-2026-48817",
+        "succeeded": true
+      },
+      {
+        "line": 14,
+        "cve": "CVE-2023-29159",
+        "succeeded": true
+      },
+      {
+        "line": 19,
+        "cve": "CVE-2026-48817",
+        "succeeded": true
+      },
+      {
+        "line": 24,
+        "cve": "CVE-2023-29159",
+        "succeeded": true
+      },
+      {
+        "line": 28,
+        "cve": "CVE-2026-48817",
+        "succeeded": true
+      },
+      {
+        "line": 34,
+        "cve": "CVE-2023-29159",
+        "succeeded": true
+      },
+      {
+        "line": 36,
+        "cve": "CVE-2026-48817",
+        "succeeded": true
+      }
+    ],
+    "optional": [
+      {
+        "line": 11,
+        "cve": "CVE-2023-29159",
+        "succeeded": false
+      },
+      {
+        "line": 23,
+        "cve": "CVE-2023-29159",
+        "succeeded": false
+      },
+      {
+        "line": 35,
+        "cve": "CVE-2023-29159",
+        "succeeded": false
+      }
+    ]
   }
 }

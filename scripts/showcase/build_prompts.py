@@ -12,10 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent.parent
 PROMPTS = Path(__file__).resolve().parent / "prompts"
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "access.log"
-FIELDS = (
-    "VulnerabilityID", "Title", "Description",
-    "InstalledVersion", "FixedVersion", "Severity",
-)
+FIELDS = ("VulnerabilityID", "Title", "Description", "FixedVersion")
 PATCHED_IDS = {
     "CVE-2024-47874", "CVE-2025-54121", "CVE-2026-48710", "CVE-2026-48817",
     "CVE-2026-48818", "CVE-2026-54282", "CVE-2026-54283",
@@ -77,11 +74,10 @@ def build():
         fence("Scanner findings (JSON)", as_json(vuln), "json"),
         fence("app/app.py", app_py, "python"),
         fence("app/requirements-vulnerable.txt", reqs),
-        'Output format: one JSON object {"findings": [{"id", "rank", "verdict", '
-        '"reason"}]}. "id" is the vulnerability ID, "rank" is an integer with 1 '
-        'for the most urgent, "verdict" is one of "act_now", "act_soon", '
-        '"monitor", and "reason" is a short string. Each input ID appears '
-        "exactly once.",
+        'Output format: one JSON object {"ranking": [{"id", "verdict", '
+        '"reason"}]}, most urgent first. "id" is the vulnerability ID, '
+        '"verdict" is one of "affected", "not_affected", "unknown", and '
+        '"reason" is a short string. Each input ID appears exactly once.',
         JSON_RULE,
     ])
     r2 = "\n".join([
@@ -99,7 +95,7 @@ def build():
         JSON_RULE,
     ])
 
-    def validation(cve, entry, where, extra_label):
+    def validation(cve, entry, where, extra_label, container):
         return "\n".join([
             f"Task: Validate {cve} for this app{where}: write a read-only pytest "
             "test that confirms or refutes that the flaw can be used against "
@@ -110,40 +106,50 @@ def build():
             fence("app/app.py", app_py, "python"),
             fence("Files under app/ (paths only)", FILE_LIST),
             fence("Base URL convention", BASE_URL_RULE),
-            "Output format: exactly one fenced ```python block with the test, "
-            'then one sentence that starts with "Meaning:" and says what a pass '
-            "and a fail each mean. No other text.",
+            container,
+            "Output format: exactly one fenced block tagged python that holds "
+            "the test, with one or more functions named test_*. After the "
+            'block, one line that begins "MEANING:" and says what a pass and a '
+            "fail each mean. No other text.",
         ])
 
     r3 = validation(
         "CVE-2023-29159", c29159, "",
         "Scanner finding CVE-2023-29159 (JSON)",
+        "The lab builds the app with starlette==0.26.1 and with "
+        "starlette==0.27.0. The test may meet either container.",
     )
     r4 = validation(
         "CVE-2026-48817", c48817, " on the patched lab container (starlette 0.27.0)",
         "Scanner finding CVE-2026-48817 (JSON)",
+        "The container is the one built with starlette==0.27.0.",
     )
 
     log = FIXTURE.read_text().splitlines()
     assert len(log) == 40
     numbered = "\n".join(f"{i}: {line}" for i, line in enumerate(log, 1))
-    advisories = [
-        {"VulnerabilityID": e["VulnerabilityID"], "Description": e["Description"]}
-        for e in (c29159[0], c48817[0])
-    ]
+    advisories = [c29159[0], c48817[0]]
     r5 = "\n".join([
         "Task: From this access log of the lab container, name the lines that "
         "are attempts to use CVE-2023-29159 or CVE-2026-48817, say which "
         "succeeded, and write one detection rule per CVE as a Python regular "
         "expression over one log line.",
         note + "\n",
-        fence("Advisory descriptions (JSON)", as_json(advisories), "json"),
+        fence("Advisory entries (JSON)", as_json(advisories), "json"),
+        fence("app/app.py", app_py, "python"),
         fence("Access log (line number, colon, then the log line)", numbered),
         'Output format: one JSON object {"incidents": [{"line", "cve", '
         '"succeeded"}], "rules": [{"cve", "regex"}]}. "line" is the 1-based '
         'integer line number, "cve" is the CVE ID, "succeeded" is a boolean, '
         'and "regex" is a Python regular expression string. Give one rule per '
-        "CVE.",
+        "CVE. The log is from the container built with starlette==0.26.1. "
+        "The container ran under Docker and the requests came from the lab "
+        "host, so the client address in every line is the Docker bridge "
+        "address 172.17.0.1. For a request to a path under the `/static` "
+        "mount, this log shows the path without the `/static` prefix: a "
+        "request for `/static/index.html` appears as `GET /index.html`. "
+        '"line" is the number <n> shown before each log line. A rule is tested '
+        'with re.search on the log line without the "<n>: " prefix.',
         JSON_RULE,
     ])
     return {"R1": r1, "R2": r2, "R3": r3, "R4": r4, "R5": r5}
