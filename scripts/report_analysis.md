@@ -5,7 +5,7 @@ This file is the analysis input of `scripts/generate_report.py`. Claude drafted 
 ## Observed facts
 
 - The advisory [GHSA-v5gw-mw7f-84px](https://github.com/advisories/GHSA-v5gw-mw7f-84px) gives the affected range `>= 0.13.5, < 0.27.0` for `starlette` (pip), and `0.27.0` as the patched version. The NVD record for CVE-2023-29159 gives the same range (`versionStartIncluding 0.13.5`, `versionEndExcluding 0.27.0`), read on 2026-11-18 through the NVD API.
-- The lab app is one route: `Mount("/static", app=StaticFiles(directory="static"), name="static")` in `app/app.py`. Next to `static/`, the working directory holds `static_disallow/` and `other/`, each with one marker file.
+- The lab app has two routes in `app/app.py`. The first is `Mount("/static", app=StaticFiles(directory="static"), name="static")`. The second, `Route("/status", Status)`, is a deliberate target for a later advisory, CVE-2026-48817; no request in this analysis reaches it. Next to `static/`, the working directory holds `static_disallow/` and `other/`, each with one marker file.
 - In `starlette==0.26.1`, as installed in the vulnerable image, `StaticFiles.lookup_path` decides whether a requested path stays inside the served folder with this line (`starlette/staticfiles.py`, line 172):
 
   ```python
@@ -52,7 +52,7 @@ This file is the analysis input of `scripts/generate_report.py`. Claude drafted 
 
 ## Checks
 
-- **H1.** Observed: `app/app.py` mounts `StaticFiles` and nothing else, and the installed `0.26.1` source holds the `commonprefix` check in `lookup_path`. A 200 response for `/static/index.html` shows the request reached `StaticFiles`. Checked again in the container validation by `test_public_file_is_served` on both images.
+- **H1.** Observed: `app/app.py` mounts `StaticFiles` at `/static`, and the installed `0.26.1` source holds the `commonprefix` check in `lookup_path`. A 200 response for `/static/index.html` shows the request reached `StaticFiles`. Checked again in the container validation by `test_public_file_is_served` on both images.
 - **H2.** The container validation: `test_sibling_folder_is_not_served` fails on the vulnerable image (status 200 with the marker text) and passes on the patched image (404). `test_unrelated_folder_is_not_served` passes on both (404). If `other/` were readable, H2 would be wrong.
 - **H3.** The container validation: a 200 for the sibling request on the vulnerable image can only happen if `..` reached the app. The host run already showed this for `uvicorn==0.54.0`; the container validation repeats it inside the image.
 - **H4.** The requirements files differ only in the `starlette` pin. The package diff above shows the fix is the only change in `staticfiles.py`. Inferred from that diff, not tested: no other change runs when the lab app serves a request. The container validation shows the sibling request changes from 200 to 404 between the two images, and the other two requests do not change.
@@ -70,6 +70,7 @@ This file is the analysis input of `scripts/generate_report.py`. Claude drafted 
 - The test covers one request pattern on one folder layout: a sibling folder named `static_disallow` next to `static`.
 - The lab does not test a sibling file such as `static1.txt`, which the advisory's proof of concept and the fix commit's test both name.
 - The lab tests no effect of the flaw other than the read of one marker file.
+- The `/status` route is written to meet the precondition of CVE-2026-48817, which both pins carry. No gate and no test of the lab exercises it.
 - H4 is partly inferred: that no other change in `0.27.0` runs when the app serves a request rests on the package diff, not on a test.
 - Trivy findings other than CVE-2023-29159 change as the Trivy database updates. The report records the database date.
 - The first evidence came from the host (Python 3.12.3); the container results (Python 3.12.16) match it, but the two runs used different Python builds.
