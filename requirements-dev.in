@@ -1,0 +1,2 @@
+# Test tools for the host and CI. Not installed in the lab images.
+pytest==9.2.0
