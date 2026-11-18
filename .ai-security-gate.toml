@@ -1,0 +1,32 @@
+# Config for the AI security gate (ai-security-gate/). The gate reads this
+# file from the base commit of a change, so a change cannot suppress its own
+# findings.
+
+fail_on = "high"
+min_confidence = "medium"
+triage_min_severity = "medium"
+
+[[suppress]]
+path = "app/requirements-vulnerable.*"
+reason = "Deliberate pin of starlette==0.26.1 (CVE-2023-29159). The lab builds it to prove the flaw. The image stays local."
+expires = 2027-05-18
+
+[[suppress]]
+path = "app/requirements-patched.*"
+reason = "starlette==0.27.0 is the proof pin, not the version to deploy. Later advisories are stated in the report."
+expires = 2027-05-18
+
+[[suppress]]
+path = "ai-security-gate/selftest/fixtures/**"
+reason = "Self-test fixtures. Vulnerable on purpose. No code here runs."
+expires = 2027-05-18
+
+[[suppress]]
+path = "app/app.py"
+reason = "Deliberate target for CVE-2026-48817: an HTTPEndpoint route with no methods= and a helper that returns fixed text. Vulnerable on purpose; the image stays local."
+expires = 2027-05-18
+
+[[suppress]]
+id = "CVE-2026-48817"
+reason = "Deliberate target for CVE-2026-48817: an HTTPEndpoint route with no methods= and a helper that returns fixed text. Vulnerable on purpose; the image stays local."
+expires = 2027-05-18
