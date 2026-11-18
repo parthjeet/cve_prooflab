@@ -1,0 +1,4 @@
+# Vulnerable variant: starlette 0.26.1 is affected by CVE-2023-29159 (< 0.27.0).
+# uvicorn has no extras on purpose (advisor condition C3).
+starlette==0.26.1
+uvicorn==0.54.0
