@@ -1,0 +1,1 @@
+{"verdict": "BLOCK", "require": [{"file": "app.py", "cwe_any": ["CWE-78", "CWE-77"], "blocking": true}]}
