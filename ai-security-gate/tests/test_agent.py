@@ -179,10 +179,13 @@ def test_fallback_block(box):
     assert r.error == "fallback block in response"
 
 
+@pytest.mark.parametrize("model", [MODEL, "claude-opus-5-5"])
 @pytest.mark.parametrize("status", [401, 403, 404])
-def test_key_cannot_use_model(box, status):
-    r = run(FakeApi((status, error_body("authentication_error"))), box)
-    assert r.error == "this key cannot use claude-mythos-5-2. No fallback model is used."
+def test_key_cannot_use_model(box, status, model):
+    r = agent.run_agent(make_client(FakeApi((status, error_body("authentication_error")))),
+                        system="sys", first_message="first", toolbox=box,
+                        config=gate.Config(), model=model, answer_schema=SCHEMA)
+    assert r.error == f"this key cannot use {model}. No fallback model is used."
 
 
 def test_other_status_error_has_type_and_request_id(box):

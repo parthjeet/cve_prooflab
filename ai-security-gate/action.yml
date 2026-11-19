@@ -29,6 +29,9 @@ inputs:
   public-details:
     description: Add title, impact, fix, and triage reason to the summary file ("true" or "false").
     default: "false"
+  model:
+    description: Model ID for the review. Empty means the gate's default.
+    default: ""
 
 runs:
   using: composite
@@ -71,6 +74,7 @@ runs:
         IN_SUMMARY_PATH: ${{ inputs.summary-path }}
         IN_PRINT_DETAILS: ${{ inputs.print-details }}
         IN_PUBLIC_DETAILS: ${{ inputs.public-details }}
+        IN_MODEL: ${{ inputs.model }}
       run: |
         args=(
           --repo "$GITHUB_WORKSPACE"
@@ -93,5 +97,8 @@ runs:
         fi
         if [ "$IN_PUBLIC_DETAILS" = "true" ]; then
           args+=(--public-details)
+        fi
+        if [ -n "$IN_MODEL" ]; then
+          args+=(--model "$IN_MODEL")
         fi
         "$RUNNER_TEMP/ai-gate-venv/bin/python" "$GITHUB_ACTION_PATH/review.py" "${args[@]}"

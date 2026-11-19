@@ -440,3 +440,74 @@ def test_sarif_flag_is_repeatable(tmp_path, capsys, monkeypatch):
                         "--summary-path", str(tmp_path / "s.json")])
     assert code == 0
     assert len(json.loads((tmp_path / "s.json").read_text())["scan"]) == 2
+
+
+def run_cli(tmp_path, monkeypatch, api, *extra):
+    repo, base, head = make_repo(tmp_path)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda **kw: make_client(api))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-not-real")
+    return review.main(["--repo", str(repo), "--base", base, "--head", head,
+                        "--evidence-path", str(tmp_path / "e.json"),
+                        "--summary-path", str(tmp_path / "s.json"), *extra])
+
+
+def test_chosen_model_reaches_request_log_and_files(tmp_path, capsys):
+    api = FakeApi(message([text(answer())], model="claude-opus-5-5"))
+    result = go(tmp_path, api, make_repo(tmp_path), model="claude-opus-5-5")
+    out, _ = last_line(capsys)
+    assert result["verdict"] == "PASS"
+    assert api.requests[0]["model"] == "claude-opus-5-5"
+    assert "model: claude-opus-5-5" in out
+    for name in ("summary.json", "evidence.json"):
+        assert json.loads((tmp_path / name).read_text())["model_requested"] == "claude-opus-5-5"
+
+
+def test_cli_model_flag(tmp_path, capsys, monkeypatch):
+    api = FakeApi(message([text(answer())], model="claude-opus-5-5"))
+    code = run_cli(tmp_path, monkeypatch, api, "--model", "claude-opus-5-5")
+    out, _ = last_line(capsys)
+    assert code == 0 and "model: claude-opus-5-5" in out
+    assert api.requests[0]["model"] == "claude-opus-5-5"
+    assert json.loads((tmp_path / "s.json").read_text())["model_requested"] == "claude-opus-5-5"
+
+
+def test_default_model_without_flag(tmp_path, capsys, monkeypatch):
+    api = loop(answer())
+    assert review.DEFAULT_MODEL == "claude-mythos-5-2"
+    assert run_cli(tmp_path, monkeypatch, api) == 0
+    out, _ = last_line(capsys)
+    assert "model: claude-mythos-5-2" in out
+    assert api.requests[0]["model"] == "claude-mythos-5-2"
+
+
+@pytest.mark.parametrize("bad", ["bad id;", "", "-x", "a" * 101, None, 5])
+def test_bad_model_id_is_error_with_zero_client_calls(tmp_path, capsys, bad):
+    api = loop(answer())
+    result = go(tmp_path, api, make_repo(tmp_path), model=bad)
+    out, last = last_line(capsys)
+    assert result["verdict"] == "ERROR" and result["error"] == "bad model id"
+    assert api.requests == []
+    assert "ERROR: bad model id" in out and last == "AI SECURITY GATE: ERROR"
+    assert json.loads((tmp_path / "evidence.json").read_text())["error"] == "bad model id"
+    assert json.loads((tmp_path / "summary.json").read_text())["error"] == "bad model id"
+
+
+def test_bad_model_id_cli_exit_2_and_log_is_escaped(tmp_path, capsys, monkeypatch):
+    api = loop(answer())
+    code = run_cli(tmp_path, monkeypatch, api, "--model", "x\n::set-env name=A::b")
+    out, _ = last_line(capsys)
+    assert code == 2 and api.requests == []
+    assert not any(line.startswith("::") for line in out.splitlines())
+    assert (tmp_path / "e.json").exists() and (tmp_path / "s.json").exists()
+
+
+def test_no_access_message_names_the_chosen_model(tmp_path):
+    result = go(tmp_path, FakeApi((403, error_body("permission_error"))),
+                make_repo(tmp_path), model="claude-opus-5-5")
+    assert result["error"] == "this key cannot use claude-opus-5-5. No fallback model is used."
+
+
+def test_model_mismatch_uses_the_chosen_model(tmp_path):
+    result = go(tmp_path, FakeApi(message([text(answer())])), make_repo(tmp_path),
+                model="claude-opus-5-5")
+    assert result["error"] == "model mismatch: claude-mythos-5-2"

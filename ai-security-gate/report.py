@@ -213,6 +213,32 @@ def _known(data):
     return value if isinstance(value, str) and value in VERDICTS else None
 
 
+def refusal(summary):
+    """(True, category or None) when the summary records a model refusal, else None.
+    Reads only verdict, final_stop_reason, and the last request's stop fields."""
+    if not isinstance(summary, dict) or summary.get("verdict") != "ERROR":
+        return None
+    reqs = _dicts(summary.get("requests"))
+    last = reqs[-1] if reqs else {}
+    if summary.get("final_stop_reason") != "refusal" and last.get("stop_reason") != "refusal":
+        return None
+    cat = last.get("stop_category")
+    return True, (cat if isinstance(cat, str) and cat else None)
+
+
+def refusing_model(summary):
+    """The model that answered, else the model requested."""
+    returned = summary.get("model_returned")
+    return returned if isinstance(returned, str) and returned else summary.get("model_requested")
+
+
+def refusal_line(model, category):
+    where = f", category: {code(category)}" if category else ""
+    return (f"**{code(model)} refused to run this security review** (stop reason: refusal"
+            f"{where}). The gate does not switch to another model. To get a review, approve a "
+            "different model's environment on this run, or re-run it.")
+
+
 def final_verdict(summary, baseline, review_result):
     """The result of the whole gate and the mode that gave it.
 
@@ -226,7 +252,26 @@ def final_verdict(summary, baseline, review_result):
     return "ERROR", "incomplete"
 
 
-def render(summary, repo=None, run_url=None, baseline=None, review_result=None):
+def pick_summary(summaries):
+    """The one summary that stands for several review runs, and a forced-error flag.
+
+    summaries holds the loaded objects in argument order; an unreadable file is None.
+    BLOCK wins, then ERROR, then an entry that is None or holds no known verdict
+    (forced error), then PASS. An empty list gives (None, False)."""
+    for wanted in ("BLOCK", "ERROR"):
+        for s in summaries:
+            if _known(s) == wanted:
+                return s, False
+    if any(_known(s) is None for s in summaries):
+        return None, True
+    for s in summaries:
+        if _known(s) == "PASS":
+            return s, False
+    return None, False
+
+
+def render(summary, repo=None, run_url=None, baseline=None, review_result=None, reviews=None,
+           refusals=None):
     summary = summary if isinstance(summary, dict) else None
     baseline = baseline if isinstance(baseline, dict) else None
     repo = repo if isinstance(repo, str) and REPO_RE.match(repo) else None
@@ -265,10 +310,20 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None):
 
     details = (ai or {}).get("details") is True
     heading = {"PASS": "Passed", "BLOCK": "Blocked", "ERROR": "Review incomplete"}[verdict]
+    picked_refusal = ai is not None and verdict == "ERROR" and refusal(ai)
+    if picked_refusal:
+        heading = "Review refused"
+    if refusals is None:
+        refusals = [(refusing_model(ai), refusal(ai)[1])] if picked_refusal else []
     blocking_sentence = (f"**{n_block} blocking finding(s).** Resolve each one. To accept a risk "
                          "instead, the repository owner adds a suppression with a reason and an "
                          "expiry date to the gate's config file on the base branch.")
     out = [MARKER, "", f"## AI Security Gate: {heading}", ""]
+    if picked_refusal:
+        # The reader sees which model refused before anything else.
+        for model, category in refusals:
+            out += [refusal_line(model, category), ""]
+        refusals = []
     if mode == "baseline":
         out.append("The AI review did not run for this change. This result comes from the "
                    "deterministic scanners alone.")
@@ -284,12 +339,24 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None):
         out.append("No finding blocks this change.")
     elif verdict == "BLOCK":
         out.append(blocking_sentence)
+    elif picked_refusal:
+        out.append("The gate fails closed, so this change is blocked until a review completes.")
+        if ai.get("error_request_id"):
+            out += ["", f"Request ID of the failed call: {code(ai.get('error_request_id'))}"]
     else:
         out.append(f"**The review did not finish:** {text(ai.get('error'))}. "
                    "The gate fails closed, so this change is blocked until a review completes.")
         if ai.get("error_request_id"):
             out += ["", f"Request ID of the failed call: {code(ai.get('error_request_id'))}"]
     out.append("")
+    for model, category in refusals:
+        out += [refusal_line(model, category), ""]
+    if isinstance(reviews, list) and len(reviews) > 1:
+        line = "Reviews in this run: " + ", ".join(
+            f"{code(model)} {enum(v, VERDICTS + ('REFUSED',))}" for model, v in reviews) + "."
+        if ai:
+            line += f" The report below is from {code(ai.get('model_requested'))}."
+        out += [line, ""]
 
     changed = (ai or {}).get("changed_files")
     parts = [f"Model: {code(ai.get('model_requested'))}"] if ai else []
@@ -436,19 +503,29 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("summary_path", nargs="?", metavar="summary",
                     help="alias of --summary")
-    ap.add_argument("--summary")
+    ap.add_argument("--summary", action="append", default=[],
+                    help="a review summary; repeat it for several reviews")
     ap.add_argument("--baseline")
     ap.add_argument("--review-result")
     ap.add_argument("--verdict-out")
     ap.add_argument("--repo")
     ap.add_argument("--run-url")
     args = ap.parse_args(argv)
-    summary = _load(args.summary or args.summary_path, "summary")
+    paths = args.summary + ([args.summary_path] if args.summary_path else [])
+    loaded = [_load(path, "summary") for path in paths]
     baseline = _load(args.baseline, "baseline summary")
-    verdict, mode = final_verdict(summary, baseline, args.review_result)
-    if summary is not None and mode != "ai":
-        print("report.py: summary holds no known verdict", file=sys.stderr)
-    sys.stdout.write(render(summary, args.repo, args.run_url, baseline, args.review_result))
+    summary, forced_error = pick_summary(loaded)
+    review_result = None if forced_error else args.review_result
+    verdict, mode = final_verdict(summary, baseline, review_result)
+    for s in loaded:
+        if s is not None and _known(s) is None:
+            print("report.py: summary holds no known verdict", file=sys.stderr)
+    reviews = [(refusing_model(s) if refusal(s) else s.get("model_requested"),
+                "REFUSED" if refusal(s) else s["verdict"])
+               for s in loaded if _known(s)]
+    refusals = [(refusing_model(s), refusal(s)[1]) for s in loaded if refusal(s)]
+    sys.stdout.write(render(summary, args.repo, args.run_url, baseline, review_result, reviews,
+                            refusals))
     sys.stdout.flush()
     if args.verdict_out:
         try:

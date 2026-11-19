@@ -481,3 +481,199 @@ def test_verdict_file_and_stdout(tmp_path):
     r = run_cli("--summary", str(FIXTURE), "--verdict-out", str(tmp_path / "no" / "v.txt"))
     assert r.returncode == 0 and r.stdout.startswith(report.MARKER)
     assert len(r.stderr.strip().splitlines()) == 1
+
+
+AI_BLOCK_OPUS = FIXTURES / "ai-block-opus-summary.json"
+AI_ERROR = FIXTURES / "ai-error-summary.json"
+
+
+def test_pick_summary_rules():
+    p, b, e = {"verdict": "PASS", "n": 1}, {"verdict": "BLOCK", "n": 2}, {"verdict": "ERROR", "n": 3}
+    assert report.pick_summary([]) == (None, False)
+    assert report.pick_summary([p]) == (p, False)
+    assert report.pick_summary([p, p2 := {"verdict": "PASS", "n": 4}]) == (p, False)
+    assert report.pick_summary([p, b]) == (b, False)
+    assert report.pick_summary([b, p]) == (b, False)
+    assert report.pick_summary([p, e]) == (e, False)
+    assert report.pick_summary([e, b]) == (b, False)
+    assert report.pick_summary([b, e]) == (b, False)
+    assert report.pick_summary([p, None]) == (None, True)
+    assert report.pick_summary([p, {}]) == (None, True)
+    assert report.pick_summary([None]) == (None, True)
+    assert report.pick_summary([None, b]) == (b, False)
+    assert report.pick_summary([None, e]) == (e, False)
+    assert p2["n"] == 4
+
+
+def test_reviews_line():
+    s = load(AI_BLOCK_OPUS)
+    out = report.render(s, reviews=[("claude-mythos-5-2", "PASS"), ("claude-opus-5-5", "BLOCK")])
+    assert ("Reviews in this run: <code>claude-mythos-5-2</code> PASS, "
+            "<code>claude-opus-5-5</code> BLOCK. The report below is from "
+            "<code>claude-opus-5-5</code>.") in out
+    assert "Reviews in this run" not in report.render(s, reviews=[("claude-opus-5-5", "BLOCK")])
+    assert "Reviews in this run" not in report.render(s)
+    assert "Reviews in this run" not in report.render(s, reviews=[])
+    # no picked report: the line ends after the list
+    out = report.render(None, reviews=[("a", "PASS"), ("b", "PASS")])
+    assert "Reviews in this run: <code>a</code> PASS, <code>b</code> PASS.\n" in out
+    assert "The report below" not in out
+
+
+def test_reviews_line_hostile_model():
+    evil = "<script>`x`|a\n::error::x @someone ](http://x)" + "Z" * 500
+    out = report.render(load(AI_BLOCK_OPUS), reviews=[(evil, "PASS"), (None, "BLOCK")])
+    line = [ln for ln in out.splitlines() if ln.startswith("Reviews in this run")][0]
+    assert "<script" not in out and "`" not in out and "@someone" not in out
+    assert "](http://x)" not in out
+    assert not any(ln.startswith("::") for ln in out.splitlines())
+    assert line.count("Z") <= 200
+    assert "<code></code> BLOCK" in line
+
+
+def test_cli_several_summaries(tmp_path):
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json")
+    missing = tmp_path / "missing.json"
+    cases = [
+        ([FIXTURE], "PASS", False),
+        ([FIXTURE, AI_BLOCK_OPUS], "BLOCK", True),
+        ([FIXTURE, AI_ERROR], "ERROR", True),
+        ([AI_ERROR, AI_BLOCK_OPUS], "BLOCK", True),
+        ([FIXTURE, FIXTURE], "PASS", True),
+        ([FIXTURE, bad], "ERROR", False),
+        ([FIXTURE, missing], "ERROR", False),
+        ([AI_BLOCK_OPUS, bad], "BLOCK", False),
+    ]
+    for i, (paths, verdict, line) in enumerate(cases):
+        out_file = tmp_path / f"v{i}.txt"
+        args = [a for p in paths for a in ("--summary", str(p))]
+        r = run_cli(*args, "--baseline", str(BASELINE_PASS), "--review-result", "success",
+                    "--verdict-out", str(out_file), "--repo", "o/r")
+        assert r.returncode == 0, r.stderr
+        assert out_file.read_text().strip() == verdict, (paths, r.stdout[:300])
+        assert ("Reviews in this run" in r.stdout) == line, paths
+    r = run_cli("--summary", str(FIXTURE), "--summary", str(AI_BLOCK_OPUS),
+                "--verdict-out", str(tmp_path / "v.txt"))
+    assert "## AI Security Gate: Blocked" in r.stdout
+    assert ("Reviews in this run: <code>claude-mythos-5-2</code> PASS, "
+            "<code>claude-opus-5-5</code> BLOCK. The report below is from "
+            "<code>claude-opus-5-5</code>.") in r.stdout
+    assert "Model: <code>claude-opus-5-5</code>" in r.stdout
+    # an unreadable file among readable ones: one stderr line, error mode
+    r = run_cli("--summary", str(FIXTURE), "--summary", str(bad))
+    assert "Review incomplete" in r.stdout and "**The AI review did not finish.**" in r.stdout
+    assert len(r.stderr.strip().splitlines()) == 1
+    # the positional alias counts as one more summary
+    r = run_cli(str(FIXTURE), "--summary", str(AI_BLOCK_OPUS))
+    assert "Blocked" in r.stdout and "Reviews in this run" in r.stdout
+
+
+def test_cli_no_summary_skipped_uses_baseline(tmp_path):
+    out_file = tmp_path / "v.txt"
+    r = run_cli("--baseline", str(BASELINE_BLOCK), "--review-result", "skipped",
+                "--verdict-out", str(out_file))
+    assert out_file.read_text().strip() == "BLOCK"
+    assert "The AI review did not run for this change." in r.stdout
+    assert "Reviews in this run" not in r.stdout
+
+
+AI_REFUSAL = FIXTURES / "ai-refusal-summary.json"
+REFUSAL_LINE = ("**{m} refused to run this security review** (stop reason: refusal{c}). The gate "
+                "does not switch to another model. To get a review, approve a different model's "
+                "environment on this run, or re-run it.")
+
+
+def refused(**kw):
+    s = load(AI_REFUSAL)
+    s.update(kw)
+    return s
+
+
+def test_single_refusal(tmp_path):
+    out = report.render(load(AI_REFUSAL), reviews=[("claude-mythos-5-2", "REFUSED")])
+    assert "## AI Security Gate: Review refused" in out
+    line = REFUSAL_LINE.format(m="<code>claude-mythos-5-2</code>", c=", category: <code>cyber</code>")
+    assert line in out
+    assert "did not finish" not in out and "Review incomplete" not in out
+    assert "The gate fails closed, so this change is blocked until a review completes." in out
+    assert out.index("refused to run") < out.index("fails closed")
+    out_file = tmp_path / "v.txt"
+    r = run_cli("--summary", str(AI_REFUSAL), "--verdict-out", str(out_file))
+    assert out_file.read_text().strip() == "ERROR"
+    assert "## AI Security Gate: Review refused" in r.stdout and line in r.stdout
+    assert "Reviews in this run" not in r.stdout
+
+
+def test_refusal_without_category():
+    s = refused(requests=[{"request_id": "r", "stop_reason": "refusal", "stop_category": ""}])
+    out = report.render(s)
+    assert REFUSAL_LINE.format(m="<code>claude-mythos-5-2</code>", c="") in out
+    assert "category" not in out
+    # final_stop_reason alone also counts
+    s = refused(requests=[], final_stop_reason="refusal")
+    assert "refused to run" in report.render(s)
+    # the last request alone also counts
+    s = refused(final_stop_reason="end_turn")
+    assert "refused to run" in report.render(s)
+
+
+def test_refusal_with_block_and_pass(tmp_path):
+    r = run_cli("--summary", str(AI_REFUSAL), "--summary", str(AI_BLOCK_OPUS),
+                "--verdict-out", str(tmp_path / "v.txt"))
+    assert "## AI Security Gate: Blocked" in r.stdout
+    assert REFUSAL_LINE.format(m="<code>claude-mythos-5-2</code>",
+                               c=", category: <code>cyber</code>") in r.stdout
+    assert ("Reviews in this run: <code>claude-mythos-5-2</code> REFUSED, "
+            "<code>claude-opus-5-5</code> BLOCK.") in r.stdout
+    assert r.stdout.index("refused to run") < r.stdout.index("Reviews in this run")
+    assert (tmp_path / "v.txt").read_text().strip() == "BLOCK"
+    r = run_cli("--summary", str(FIXTURE), "--summary", str(AI_REFUSAL),
+                "--verdict-out", str(tmp_path / "w.txt"))
+    assert "## AI Security Gate: Review refused" in r.stdout
+    assert "Reviews in this run: <code>claude-mythos-5-2</code> PASS, " \
+        "<code>claude-mythos-5-2</code> REFUSED." in r.stdout
+    assert "refused to run" in r.stdout
+    assert (tmp_path / "w.txt").read_text().strip() == "ERROR"
+
+
+def test_refusal_hostile_strings():
+    evil = "<script>`x`|a\n::error::x @someone ](http://x)" + "Z" * 500
+    s = refused(model_requested=evil, requests=[
+        {"request_id": "r", "stop_reason": "refusal", "stop_category": evil}])
+    out = report.render(s)
+    assert "<script" not in out and "`" not in out and "@someone" not in out
+    assert "](http://x)" not in out
+    assert not any(ln.startswith("::") for ln in out.splitlines())
+    for m in re.findall(r"<code>(.*?)</code>", out):
+        assert m.count("Z") <= 200
+
+
+def test_other_error_keeps_generic_text():
+    s = base_summary(verdict="ERROR", error="limit reached: triage findings",
+                     final_stop_reason="end_turn",
+                     requests=[{"request_id": "r", "stop_reason": "end_turn",
+                                "stop_category": None}])
+    out = report.render(s)
+    assert "## AI Security Gate: Review incomplete" in out
+    assert "**The review did not finish:** limit reached&#58; triage findings." in out
+    assert "refused" not in out
+    # a PASS summary with a refusal-looking stop reason is not a refusal
+    assert report.refusal(base_summary(final_stop_reason="refusal")) is None
+
+
+def test_refusal_names_the_model_that_answered(tmp_path):
+    s = refused(model_requested="m-req", model_returned="m-req-20261101")
+    out = report.render(s)
+    assert REFUSAL_LINE.format(m="<code>m-req-20261101</code>",
+                               c=", category: <code>cyber</code>") in out
+    assert "<code>m-req</code> refused" not in out
+    p = tmp_path / "s.json"
+    p.write_text(json.dumps(s))
+    r = run_cli("--summary", str(p), "--summary", str(FIXTURE))
+    assert "<code>m-req-20261101</code> REFUSED" in r.stdout
+    # only model_requested set
+    for returned in (None, ""):
+        s = refused(model_requested="m-req", model_returned=returned)
+        out = report.render(s)
+        assert "<code>m-req</code> refused to run" in out

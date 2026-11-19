@@ -12,7 +12,6 @@ import anthropic
 import tools
 
 TOOL_LIMIT_TEXT = "ERROR: tool-call limit reached; answer now"
-NO_ACCESS = "this key cannot use claude-mythos-5-2. No fallback model is used."
 CACHE = {"type": "ephemeral"}
 
 
@@ -96,7 +95,8 @@ def run_agent(client, *, system, first_message, toolbox, config, model, answer_s
             )
         except anthropic.APIStatusError as e:
             if e.status_code in (401, 403, 404):
-                return fail(NO_ACCESS, e.request_id)
+                return fail(f"this key cannot use {model}. No fallback model is used.",
+                            e.request_id)
             return fail(f"API error {e.status_code} {e.type}", e.request_id)
         except anthropic.APIConnectionError:
             return fail("API error connection")

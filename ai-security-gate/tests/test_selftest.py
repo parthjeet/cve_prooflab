@@ -259,6 +259,24 @@ def test_main_without_evidence_dir(monkeypatch, capsys):
     assert "self-test tokens" not in out
 
 
+def test_main_model_flag_reaches_review(tmp_path, monkeypatch):
+    calls = []
+    install_fake_review(monkeypatch, calls)
+    assert selftest.main(["--model", "X"]) == 0
+    assert [c["model"] for c in calls] == ["X"] * 6
+    calls.clear()
+    assert selftest.main(["--model", "X", "--evidence-dir", str(tmp_path)]) == 0
+    assert [c["model"] for c in calls] == ["X"] * 6
+    assert all("evidence_path" in c and "summary_path" in c for c in calls)
+
+
+def test_main_without_model_flag_passes_no_model(tmp_path, monkeypatch):
+    calls = []
+    install_fake_review(monkeypatch, calls)
+    selftest.main(["--evidence-dir", str(tmp_path)])
+    assert len(calls) == 6 and all("model" not in c for c in calls)
+
+
 SCAN_DIR = FIXTURES / "scan-triage"
 
 

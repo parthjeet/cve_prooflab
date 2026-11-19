@@ -1,0 +1,41 @@
+{
+  "model_requested": "claude-mythos-5-2",
+  "model_returned": null,
+  "final_stop_reason": "refusal",
+  "base": "830e3b425107e8f9f797c876b41d94273d2f8758",
+  "head": "d55cf8d58f3af4939216e95aa0f6a56c01113d7d",
+  "changed_files": [
+    "app/app.py"
+  ],
+  "limits": {
+    "fail_on": "high",
+    "min_confidence": "medium",
+    "effort": "medium",
+    "triage_min_severity": "medium"
+  },
+  "notice": null,
+  "requests": [
+    {
+      "request_id": "req_1",
+      "stop_reason": "tool_use",
+      "stop_category": null,
+      "usage": {}
+    },
+    {
+      "request_id": "req_2",
+      "stop_reason": "refusal",
+      "stop_category": "cyber",
+      "usage": {}
+    }
+  ],
+  "tool_calls": [],
+  "totals": {
+    "requests": 1
+  },
+  "findings": [],
+  "triage": [],
+  "expired_suppressions": [],
+  "verdict": "ERROR",
+  "error": "model refused (category: cyber)",
+  "error_request_id": null
+}

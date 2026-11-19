@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """AI gate self-test: the review must return the expected verdict on fixed fixtures.
 
-Usage: selftest.py [--evidence-dir DIR]
+Usage: selftest.py [--evidence-dir DIR] [--model ID]
 Exit: 0 all fixtures match, 1 a fixture does not match, 2 harness error.
 """
 import argparse
@@ -133,11 +133,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="AI gate self-test")
     parser.add_argument("--evidence-dir", default=None,
                         help="write <fixture>-evidence.json and <fixture>-summary.json here")
+    parser.add_argument("--model", default=None,
+                        help="model ID passed to the review (default: the review's own default)")
     args = parser.parse_args(argv)
 
     from review import run_review
 
-    review_fn = run_review
+    extra = {"model": args.model} if args.model is not None else {}
+
+    def review_fn(repo, base_sha, head_sha, scanner_report=None, sarif_reports=()):
+        return run_review(repo, base_sha, head_sha, scanner_report, sarif_reports, **extra)
+
     if args.evidence_dir:
         evidence_dir = Path(args.evidence_dir)
         evidence_dir.mkdir(parents=True, exist_ok=True)
@@ -146,7 +152,7 @@ def main(argv=None):
             fixture = Path(repo).name.rsplit("-", 1)[0]
             return run_review(repo, base_sha, head_sha, scanner_report, sarif_reports,
                               evidence_path=evidence_dir / f"{fixture}-evidence.json",
-                              summary_path=evidence_dir / f"{fixture}-summary.json")
+                              summary_path=evidence_dir / f"{fixture}-summary.json", **extra)
 
     with tempfile.TemporaryDirectory() as work_dir:
         code = run(FIXTURES, review_fn, work_dir)

@@ -9,6 +9,7 @@ The summary file holds four model-written fields only with --public-details.
 import argparse
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -22,7 +23,8 @@ import gate
 import scanner
 import tools
 
-MODEL = "claude-mythos-5-2"
+DEFAULT_MODEL = "claude-mythos-5-2"
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 HERE = Path(__file__).resolve().parent
 FILE_DIFF_CAP = 20_000
 TOTAL_DIFF_CAP = 150_000
@@ -184,7 +186,7 @@ def suppression_text(entry):
 
 
 def public_lines(state):
-    out = [f"model: {MODEL}", f"base: {state['base']}", f"head: {state['head']}",
+    out = [f"model: {safe(state['model'])}", f"base: {state['base']}", f"head: {state['head']}",
            f"changed files: {len(state['changed_files'])}"]
     if state.get("notice"):
         out.append(state["notice"])
@@ -249,7 +251,7 @@ def summary_of(state, details=False):
     holds evidence, the answer summary, or error_detail."""
     a = state.get("agent") or {}
     summary = {
-        "model_requested": MODEL,
+        "model_requested": state["model"],
         "model_returned": a.get("model_returned"),
         "final_stop_reason": a.get("final_stop_reason"),
         "base": state["base"], "head": state["head"],
@@ -309,14 +311,16 @@ def jsonable_rulings(items):
 
 def run_review(repo, base_sha, head_sha, scanner_report=None, sarif_reports=(), *, client=None,
                print_details=False, public_details=False, evidence_path=None, summary_path=None, today=None,
-               config_path=".ai-security-gate.toml"):
+               config_path=".ai-security-gate.toml", model=DEFAULT_MODEL):
     today = today or date.today()
-    state = {"base": base_sha, "head": head_sha, "changed_files": [], "limits": {},
+    state = {"model": model, "base": base_sha, "head": head_sha, "changed_files": [], "limits": {},
              "notice": None, "agent": None, "answer": None, "findings": [], "triage": [],
              "scan": [], "scanners": [], "expired": [], "verdict": "ERROR", "error": None,
              "error_detail": None}
     blocking, triage_result, scan_result = [], [], []
     try:
+        if not isinstance(model, str) or not MODEL_RE.match(model):
+            raise gate.GateError("bad model id")
         config, notice = gate.load_config(repo, base_sha, head_sha, config_path)
         state["notice"] = notice
         state["limits"] = {k: getattr(config, k) for k in (
@@ -339,7 +343,7 @@ def run_review(repo, base_sha, head_sha, scanner_report=None, sarif_reports=(), 
             "{max_tool_calls}", str(config.max_tool_calls))
         result = agent.run_agent(
             client, system=system, first_message=message,
-            toolbox=tools.Toolbox(repo, base_sha, head_sha), config=config, model=MODEL,
+            toolbox=tools.Toolbox(repo, base_sha, head_sha), config=config, model=model,
             answer_schema=ANSWER_SCHEMA)
         state["agent"] = asdict(result)
         if result.error:
@@ -402,11 +406,12 @@ def main(argv=None):
     p.add_argument("--summary-path", default="ai-security-gate-summary.json")
     p.add_argument("--print-details", action="store_true")
     p.add_argument("--public-details", action="store_true")
+    p.add_argument("--model", default=DEFAULT_MODEL)
     a = p.parse_args(argv)
     result = run_review(a.repo, a.base, a.head, a.scanner_report, a.sarif,
                         print_details=a.print_details, public_details=a.public_details,
                         evidence_path=a.evidence_path,
-                        summary_path=a.summary_path, config_path=a.config_path)
+                        summary_path=a.summary_path, config_path=a.config_path, model=a.model)
     return EXIT[result["verdict"]]
 
 

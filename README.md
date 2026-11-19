@@ -10,7 +10,7 @@ CVE-2023-29159 is a path traversal in Starlette `StaticFiles`, affecting `starle
 - Publishing on `127.0.0.1` does not stop the container from making outbound connections. The app makes none.
 - The only file the flaw can expose is a lab marker with fixed text (`app/static_disallow/marker.txt`). The images hold no secrets and no real data.
 - The test requests read; they do not write, delete, or run code. The traversal request has the same form as the advisory's proof of concept.
-- The app also holds a `/status` endpoint, added on purpose so that a later advisory (CVE-2026-48817) has a reachable target for a model comparison task. It returns fixed text and reads no file.
+- The app also holds a `/status` endpoint, added on purpose so that a later advisory (CVE-2026-48817) has a reachable target. It returns fixed text and reads no file.
 - No image is pushed to a registry. `scripts/validate.py` removes each container it starts, also when a run fails or is interrupted.
 
 ## Pipeline
