@@ -373,7 +373,7 @@ def test_accepted_finding_is_not_sent_and_is_suppressed(tmp_path, capsys):
     sup = [e for e in summary["scan"] if e["ruling"] == "suppressed"]
     assert len(sup) == 1 and sup[0]["key"] is None and sup[0]["verdict"] is None
     assert sup[0]["suppression"]["reason"] == "OWNER-REASON"
-    assert summary["scanners"] == [{"name": "example-sast", "version": "1.0"}]
+    assert summary["scanners"] == [{"name": "example-sast", "version": "1.0", "kind": "code"}]
     assert "scan: - rule.skip - - app.py:1 suppressed (reason: OWNER-REASON" in out
 
 
