@@ -1,4 +1,0 @@
-# Patched variant: starlette 0.27.0 is the first version with the CVE-2023-29159 fix.
-# uvicorn has no extras on purpose (advisor condition C3).
-starlette==0.27.0
-uvicorn==0.54.0

@@ -40,8 +40,9 @@ trap 'rm -rf "$RAW"' EXIT
 trivy --version
 semgrep --disable-version-check --version
 
-# 1. Dependencies. The patterns find app/requirements-patched.txt and
-#    app/requirements-vulnerable.txt. No ignore file or config file from the checkout.
+# 1. Dependencies. The patterns find requirements-dev.txt and
+#    requirements-scan.txt. Trivy also reads requirements.txt files by default name.
+#    No ignore file or config file from the checkout.
 trivy fs --scanners vuln --format json --output "$OUT_DIR/trivy-deps.json" \
   --file-patterns 'pip:requirements-.*\.txt' --ignorefile '' -c '' --secret-config '' .
 
