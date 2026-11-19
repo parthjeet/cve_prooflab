@@ -54,3 +54,9 @@ def test_status_is_ok(target):
     status, body = _get(*target, "/status")
     assert status == 200
     assert body == b"OK"
+
+
+def test_version_is_served(target):
+    status, body = _get(*target, "/version")
+    assert status == 200
+    assert body == b"1.0.0"
