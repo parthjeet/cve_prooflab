@@ -23,6 +23,9 @@ inputs:
   print-details:
     description: Print model-written details to the log ("true" or "false").
     default: "false"
+  public-details:
+    description: Add title, impact, fix, and triage reason to the summary file ("true" or "false").
+    default: "false"
 
 runs:
   using: composite
@@ -63,6 +66,7 @@ runs:
         IN_EVIDENCE_PATH: ${{ inputs.evidence-path }}
         IN_SUMMARY_PATH: ${{ inputs.summary-path }}
         IN_PRINT_DETAILS: ${{ inputs.print-details }}
+        IN_PUBLIC_DETAILS: ${{ inputs.public-details }}
       run: |
         args=(
           --repo "$GITHUB_WORKSPACE"
@@ -77,5 +81,8 @@ runs:
         fi
         if [ "$IN_PRINT_DETAILS" = "true" ]; then
           args+=(--print-details)
+        fi
+        if [ "$IN_PUBLIC_DETAILS" = "true" ]; then
+          args+=(--public-details)
         fi
         "$RUNNER_TEMP/ai-gate-venv/bin/python" "$GITHUB_ACTION_PATH/review.py" "${args[@]}"

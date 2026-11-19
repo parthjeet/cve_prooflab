@@ -171,6 +171,7 @@ jobs:
           base: ${{ steps.range.outputs.base }}
           head: ${{ steps.range.outputs.head }}
           scanner-report: ${{ runner.temp }}/trivy-report/trivy-patched.json
+          public-details: "true"
 
       - name: Upload summary
         if: ${{ !cancelled() }}

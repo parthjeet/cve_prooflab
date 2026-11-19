@@ -1,7 +1,9 @@
 """Render the gate's public summary file as a markdown pull request comment.
 
-Standard library only. Holds no model-written text. Every string from the
-summary is untrusted: it passes through code() or text() before it is printed.
+Standard library only. Model-written text appears only when the summary holds
+"details": true, and only in the fields title, impact, fix, and reason. Every
+string from the summary is untrusted: it passes through code() or text() before
+it is printed.
 """
 import argparse
 import json
@@ -15,6 +17,10 @@ MAX_REPORT = 60000
 MAX_ROWS = 50
 SHORT = 200
 LONG = 300
+DETAIL = 500
+MAX_BLOCKS = 20
+FIX_LINE = ("upgrade the package to a release that fixes this advisory, "
+            "or remove the code path that reaches it.")
 
 VERDICTS = ("PASS", "BLOCK", "ERROR")
 SEVERITIES = ("low", "medium", "high", "critical")
@@ -117,6 +123,41 @@ def _row(entry, kind, repo, head, with_verdict=False):
     return cells
 
 
+def detail(entry, key, limit):
+    """Escaped model text of one field, or None when it is not a non-empty string."""
+    value = entry.get(key)
+    return text(value, limit) if isinstance(value, str) and value.strip() else None
+
+
+def _blocking_row(n, entry, kind, repo, head):
+    if kind == "change":
+        source, ident, package = "Code change", entry.get("cwe"), "-"
+        severity = enum(entry.get("severity"), SEVERITIES)
+    else:
+        source, ident, severity = "Dependency scan", entry.get("id"), "-"
+        package = code(entry.get("package")) if entry.get("package") else "-"
+    return [str(n), source, severity, id_cell(ident), package,
+            enum(entry.get("confidence"), CONFIDENCES),
+            location_cell(entry.get("file"), entry.get("line"), repo, head)]
+
+
+def _block(n, entry, kind):
+    if kind == "change":
+        title = detail(entry, "title", SHORT)
+        out = [f"**{n}. {title or 'Code change finding'}**", ""]
+        for label, key in (("Impact", "impact"), ("Recommended fix", "fix")):
+            value = detail(entry, key, DETAIL)
+            if value:
+                out.append(f"- {label}: {value}")
+    else:
+        out = [f"**{n}. {code(entry.get('id'))} in {code(entry.get('package'))}**", ""]
+        reason = detail(entry, "reason", DETAIL)
+        if reason:
+            out.append(f"- Analysis: {reason}")
+        out.append(f"- Recommended fix: {FIX_LINE}")
+    return out + [""]
+
+
 def _suppressed_row(entry, kind, repo, head):
     sup = entry.get("suppression") if isinstance(entry.get("suppression"), dict) else {}
     ident = entry.get("cwe") if kind == "change" else entry.get("id")
@@ -145,15 +186,19 @@ def render(summary, repo=None, run_url=None):
     t_block, t_sup, t_note = (pick(triage, r) for r in ("blocking", "suppressed", "note"))
     n_block = len(f_block) + len(t_block)
 
-    out = [MARKER, "", f"## AI security gate: {enum(verdict, VERDICTS)}", ""]
+    details = summary.get("details") is True
+    heading = {"PASS": "Passed", "BLOCK": "Blocked", "ERROR": "Review incomplete"}.get(
+        verdict) if isinstance(verdict, str) else None
+    out = [MARKER, "", f"## AI Security Gate: {heading or code(verdict)}", ""]
     if verdict == "PASS":
-        out.append("Nothing blocks this change.")
+        out.append("No finding blocks this change.")
     elif verdict == "BLOCK":
-        out.append(f"{n_block} item(s) block this change. Fix each one, or add a suppression "
-                   "with a reason and an expiry date to the gate's config file.")
+        out.append(f"**{n_block} blocking finding(s).** Resolve each one. To accept a risk "
+                   "instead, the repository owner adds a suppression with a reason and an "
+                   "expiry date to the gate's config file on the base branch.")
     elif verdict == "ERROR":
-        out.append(f"The review did not finish: {text(summary.get('error'))}. "
-                   "The gate blocks on an error.")
+        out.append(f"**The review did not finish:** {text(summary.get('error'))}. "
+                   "The gate fails closed, so this change is blocked until a review completes.")
         if summary.get("error_request_id"):
             out += ["", f"Request ID of the failed call: {code(summary.get('error_request_id'))}"]
     out.append("")
@@ -168,16 +213,17 @@ def render(summary, repo=None, run_url=None):
         parts.append(f"[run]({run_url})")
     out += [" | ".join(parts), ""]
 
-    out.append(f"Change findings: {len(f_block)} blocking, {len(f_sup)} suppressed, "
+    out.append(f"Change findings: {len(f_block)} blocking, {len(f_sup)} accepted, "
                f"{len(f_note)} notes. Scanner findings triaged: {len(triage)} total, "
-               f"{len(t_block)} blocking, {len(t_sup)} suppressed, "
+               f"{len(t_block)} blocking, {len(t_sup)} accepted, "
                f"{sum(1 for t in triage if t.get('verdict') == 'not_reachable')} not reachable, "
                f"{sum(1 for t in triage if t.get('verdict') == 'unknown')} unknown.")
     out.append("")
 
     warnings = []
     if summary.get("notice"):
-        warnings.append("Warning: the gate's config came from the change under review.")
+        warnings.append("Warning: the base commit holds no gate config. The gate used the "
+                        "limits of this change and ignored its suppressions.")
     returned, requested = summary.get("model_returned"), summary.get("model_requested")
     if returned is not None and returned != requested:
         warnings.append("Warning: the model that answered differs from the model requested.")
@@ -189,21 +235,29 @@ def render(summary, repo=None, run_url=None):
         out += [w, ""]
 
     if n_block:
-        out += ["### Blocking", ""]
-        rows = ([_row(f, "change", repo, head) for f in f_block]
-                + [_row(t, "scan", repo, head) for t in t_block])
-        out += table(["Kind", "CWE or ID", "Package", "Severity", "Confidence", "Location"], rows)
+        out += ["### Blocking findings", ""]
+        entries = [(f, "change") for f in f_block] + [(t, "scan") for t in t_block]
+        rows = [_blocking_row(i, e, k, repo, head) for i, (e, k) in enumerate(entries, 1)]
+        out += table(["#", "Source", "Severity", "CWE or ID", "Package", "Confidence", "Location"],
+                     rows)
         out.append("")
+        keys = {"change": ("title", "impact", "fix"), "scan": ("reason",)}
+        if any(detail(e, key, 1) for e, k in entries for key in keys[k]):
+            for i, (e, k) in enumerate(entries[:MAX_BLOCKS], 1):
+                out += _block(i, e, k)
+            if len(entries) > MAX_BLOCKS:
+                out += [f"Details of {len(entries) - MAX_BLOCKS} more findings are in the "
+                        "summary artifact.", ""]
 
     if f_sup or t_sup:
-        out += ["### Suppressed", ""]
+        out += ["### Accepted risks", ""]
         rows = ([_suppressed_row(f, "change", repo, head) for f in f_sup]
                 + [_suppressed_row(t, "scan", repo, head) for t in t_sup])
-        out += table(["CWE or ID", "Location", "Reason", "Expires"], rows)
+        out += table(["CWE or ID", "Location", "Justification", "Expires"], rows)
         out.append("")
 
     notes = f_note + t_note
-    out += [f"<details><summary>Not blocking ({len(notes)})</summary>", ""]
+    out += [f"<details><summary>Non-blocking findings ({len(notes)})</summary>", ""]
     out.append(
         f"A change finding blocks only when its severity is {enum(limits.get('fail_on'), SEVERITIES)} "
         f"or higher, its confidence is {enum(limits.get('min_confidence'), CONFIDENCES)} or higher, "
@@ -215,8 +269,14 @@ def render(summary, repo=None, run_url=None):
     if notes:
         rows = ([_row(f, "change", repo, head, True) for f in f_note]
                 + [_row(t, "scan", repo, head, True) for t in t_note])
-        out += table(["Kind", "CWE or ID", "Package", "Verdict", "Severity", "Confidence",
-                      "Location"], rows)
+        headers = ["Kind", "CWE or ID", "Package", "Verdict", "Severity", "Confidence",
+                   "Location"]
+        if details:
+            notes_text = ([detail(f, "title", SHORT) for f in f_note]
+                          + [detail(t, "reason", LONG) for t in t_note])
+            rows = [row + [value or "-"] for row, value in zip(rows, notes_text)]
+            headers.append("Details")
+        out += table(headers, rows)
         out.append("")
     out += ["</details>", ""]
 
@@ -229,8 +289,12 @@ def render(summary, repo=None, run_url=None):
         out.append(f"- {code(key)}: {num(totals[key])}")
     out += ["", "</details>", ""]
 
-    out.append("This report holds no model-written text. "
-               "The model's reasons are in the evidence file of a local run.")
+    if details:
+        out.append(f"Finding descriptions are AI-generated by {code(requested)}. "
+                   "Check each one against the code before you act on it.")
+    else:
+        out.append("This report shows severity, weakness class, and location. "
+                   "Finding descriptions are not published for this repository.")
 
     result = "\n".join(out) + "\n"
     if len(result) > MAX_REPORT:

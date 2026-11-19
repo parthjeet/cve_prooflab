@@ -47,14 +47,20 @@ def scan(**kw):
 
 def test_real_pass_summary():
     out = report.render(real(), "o/r", None)
-    assert "## AI security gate: PASS" in out
-    assert "### Blocking" not in out
-    sup = out.split("### Suppressed")[1].split("<details>")[0]
+    assert "## AI Security Gate: Passed" in out
+    assert "### Blocking findings" not in out
+    sup = out.split("### Accepted risks")[1].split("<details>")[0]
     rows = [ln for ln in sup.splitlines() if ln.startswith("| ") and "CVE-" in ln]
     assert len(rows) == 1
     assert "CVE-2026-48817" in rows[0] and "app/app.py&#58;23" in rows[0]
-    assert "Deliberate target" in rows[0] and "2027-05-18" in rows[0]
-    assert "Not blocking (10)" in out
+    assert "Risk accepted by the service owner until the upgrade to the fixed release ships." \
+        in rows[0]
+    assert "2027-05-18" in rows[0]
+    assert "Non-blocking findings (10)" in out
+    assert "| Details |" not in out
+    assert "Finding descriptions are not published for this repository." in out
+    for word in ("Deliberate", "on purpose", "Suppressed"):
+        assert word not in out
     assert "45105" in out and "2867" in out
 
 
@@ -63,17 +69,23 @@ def test_block_order():
     s["triage"].append(scan(id="CVE-2025-11111", ruling="suppressed",
                             suppression={"reason": "r", "expires": "2027-01-01"}))
     out = report.render(s, "o/r")
-    b, sp, d = out.index("### Blocking"), out.index("### Suppressed"), out.index("<details>")
+    b, sp, d = (out.index("### Blocking findings"), out.index("### Accepted risks"),
+                out.index("<details>"))
     assert b < sp < d
     blocking = out[b:sp]
     assert "CWE-22" in blocking and "CVE-2025-99999" in blocking
-    assert "2 item(s) block this change" in out
+    assert "| # | Source | Severity | CWE or ID | Package | Confidence | Location |" in blocking
+    assert "Code change" in blocking and "Dependency scan" in blocking
+    assert "## AI Security Gate: Blocked" in out
+    assert "**2 blocking finding(s).** Resolve each one." in out
 
 
 def test_error():
     s = base_summary(verdict="ERROR", error="boom happened", error_request_id="req_abc123")
     out = report.render(s)
-    assert "The review did not finish: boom happened." in out
+    assert "## AI Security Gate: Review incomplete" in out
+    assert "**The review did not finish:** boom happened. The gate fails closed, so this " \
+        "change is blocked until a review completes." in out
     assert "req_abc123" in out
     assert "| Kind" not in out and "### " not in out
     assert "req_abc123" not in report.render(base_summary(error_request_id="req_abc123"))
@@ -104,7 +116,7 @@ def test_row_cap_and_size():
     s = base_summary(triage=[scan(id=f"CVE-2025-{1000 + i}", verdict="not_reachable",
                                   ruling="note") for i in range(80)])
     out = report.render(s)
-    notes = out.split("Not blocking (80)")[1].split("</details>")[0]
+    notes = out.split("Non-blocking findings (80)")[1].split("</details>")[0]
     assert sum(1 for ln in notes.splitlines() if ln.startswith("| ") and "CVE-" in ln) == 50
     assert "and 30 more; see the summary artifact" in out
     huge = base_summary(findings=[change(ruling="blocking", file="f" * 150 + str(i))
@@ -119,8 +131,9 @@ def test_row_cap_and_size():
 
 def test_warnings():
     out = report.render(base_summary())
-    assert "config came from the change" not in out and "differs" not in out
-    assert "config came from the change under review" in report.render(base_summary(notice="x"))
+    assert "no gate config" not in out and "differs" not in out
+    assert ("Warning: the base commit holds no gate config. The gate used the limits of this "
+            "change and ignored its suppressions.") in report.render(base_summary(notice="x"))
     assert "differs from the model requested" in report.render(base_summary(model_returned="m-2"))
     out = report.render(base_summary(expired_suppressions=[
         {"path": None, "id": "CVE-2025-1111", "cwe": None, "reason": "r",
@@ -166,3 +179,86 @@ def test_marker_and_links():
     assert "blob/" not in out and "evil.example" not in out and "[run]" not in out
     ok = run_cli(str(FIXTURE), "--repo", "o/r")
     assert ok.returncode == 0 and ok.stdout.splitlines()[0] == report.MARKER
+
+
+def detailed(**kw):
+    s = base_summary(verdict="BLOCK", details=True, **kw)
+    return s
+
+
+def with_text(entry, **kw):
+    return {**entry, **kw}
+
+
+def test_block_with_details():
+    f = with_text(change(), title="Query built from input", impact="Reads any row.",
+                  fix="Use a parameterized query.")
+    t = with_text(scan(), reason="The route calls the affected function.")
+    n = with_text(change(ruling="note", severity="low"), title="Minor note title")
+    nt = with_text(scan(id="CVE-2025-1", ruling="note", verdict="not_reachable"),
+                   reason="Never imported.")
+    out = report.render(detailed(findings=[f, n], triage=[t, nt]), "o/r")
+    assert out.index("### Blocking findings") < out.index("<details>")
+    assert "**1. Query built from input**" in out
+    assert "- Impact: Reads any row." in out
+    assert "- Recommended fix: Use a parameterized query." in out
+    assert "**2. <code>CVE-2025-12345</code> in <code>pkgtool</code>**" in out
+    assert "- Analysis: The route calls the affected function." in out
+    assert ("- Recommended fix: upgrade the package to a release that fixes this advisory, "
+            "or remove the code path that reaches it.") in out
+    notes = out.split("Non-blocking findings (2)")[1].split("</details>")[0]
+    assert "| Details |" in notes and "Minor note title" in notes and "Never imported." in notes
+    assert "Finding descriptions are AI-generated by <code>m-1</code>. Check each one " \
+        "against the code before you act on it." in out
+    assert "not published" not in out
+
+
+def test_block_without_details():
+    out = report.render(base_summary(verdict="BLOCK", findings=[change()], triage=[scan()]))
+    assert "### Blocking findings" in out and "**1. " not in out
+    assert "Recommended fix" not in out and "not published" in out
+
+
+def test_hostile_detail_strings():
+    big = "Z" * 5000
+    evil = "<script>`x`|a\n::error::x @someone ](http://x)"
+    f = with_text(change(), title=evil + big, impact=evil + big, fix=evil + big)
+    t = with_text(scan(), reason=evil + big)
+    n = with_text(change(ruling="note"), title=evil + big)
+    nt = with_text(scan(ruling="note", verdict="unknown"), reason=evil + big)
+    out = report.render(detailed(findings=[f, n], triage=[t, nt]), "o/r")
+    assert "<script" not in out and "`" not in out
+    assert "@someone" not in out
+    assert not any(ln.startswith("::") for ln in out.splitlines())
+    assert "](http://x)" not in out
+    # each field is cut at its limit, counted with the 45-character prefix of `evil`
+    pre = len(evil)
+    zs = {len(m) for m in re.findall(r"Z+", out)}
+    assert zs == {200 - pre, 500 - pre, 300 - pre}
+    title = [ln for ln in out.splitlines() if ln.startswith("**1. ")][0]
+    assert title.count("Z") == 200 - pre
+    impact = [ln for ln in out.splitlines() if ln.startswith("- Impact: ")][0]
+    assert impact.count("Z") == 500 - pre
+
+
+def test_non_string_detail_fields_are_skipped():
+    f = with_text(change(), title=5, impact=["x"], fix="")
+    out = report.render(detailed(findings=[f]), "o/r")
+    assert "Impact:" not in out and "Recommended fix:" not in out
+
+
+def test_evidence_and_answer_summary_never_appear():
+    f = with_text(change(), evidence="SENTINEL-EVIDENCE", title="T1")
+    s = detailed(findings=[f], summary="SENTINEL-SUMMARY", error_detail="SENTINEL-ERR")
+    s["triage"] = [with_text(scan(), evidence="SENTINEL-EVIDENCE")]
+    out = report.render(s)
+    assert "SENTINEL" not in out
+
+
+def test_detail_blocks_cap_at_20():
+    fs = [with_text(change(file=f"a{i}.py"), title=f"Title {i}", impact="i", fix="f")
+          for i in range(30)]
+    out = report.render(detailed(findings=fs), "o/r")
+    assert len(re.findall(r"^\*\*\d+\. ", out, re.M)) == 20
+    assert "**20. Title 19**" in out and "**21. " not in out
+    assert "Details of 10 more findings are in the summary artifact." in out

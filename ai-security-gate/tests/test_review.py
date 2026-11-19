@@ -120,6 +120,37 @@ def test_print_details_inside_stop_commands(tmp_path, capsys):
     assert last == "AI SECURITY GATE: BLOCK"
 
 
+def test_public_details_adds_four_fields_only(tmp_path, capsys):
+    entry = {"id": "CVE-1", "package": "pkgx", "verdict": "reachable", "confidence": "high",
+             "file": "app.py", "line": 3, "reason": "REASON-9x5"}
+    report = {"SchemaVersion": 2, "Results": [{"Class": "lang-pkgs", "Vulnerabilities": [
+        {"VulnerabilityID": "CVE-1", "PkgName": "pkgx", "Severity": "HIGH",
+         "Description": "ADVISORY-TEXT"}]}]}
+    path = tmp_path / "scan.json"
+    path.write_text(json.dumps(report))
+    go(tmp_path, loop(answer([finding()], triage=[entry])), make_repo(tmp_path),
+       scanner_report=str(path), public_details=True)
+    out, _ = last_line(capsys)
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert summary["details"] is True
+    f = summary["findings"][0]
+    assert (f["title"], f["impact"], f["fix"]) == ("TITLE-9x1", "IMPACT-9x3", "FIX-9x4")
+    assert summary["triage"][0]["reason"] == "REASON-9x5"
+    text_ = json.dumps(summary)
+    assert "EVIDENCE-9x2" not in text_ and "SUMMARY-9x6" not in text_
+    assert "evidence" not in f and "error_detail" not in text_
+    for word in SECRET_WORDS:
+        assert word not in out
+
+
+def test_default_summary_has_no_details_flag(tmp_path):
+    go(tmp_path, loop(answer([finding()])), make_repo(tmp_path))
+    summary = json.loads((tmp_path / "summary.json").read_text())
+    assert "details" not in summary
+    assert set(summary["findings"][0]) == {"severity", "confidence", "cwe", "file", "line",
+                                           "ruling", "suppression"}
+
+
 def test_change_finding_on_unchanged_file_is_a_note(tmp_path, capsys):
     result = go(tmp_path, loop(answer([finding(file="other.py", line=1)])), make_repo(tmp_path))
     out, _ = last_line(capsys)

@@ -148,7 +148,37 @@ def test_config_only_in_head_gives_notice(repo):
     head = commit(repo, {".ai-security-gate.toml": 'effort = "max"\n'})
     c, notice = gate.load_config(repo, base, head)
     assert c.effort == "max"
-    assert notice == "NOTICE: config taken from the change under review"
+    assert notice == ("NOTICE: the base commit has no gate config; "
+                      "suppressions in the change under review are ignored")
+
+
+def test_head_only_config_drops_suppressions_and_loosened_limits(repo):
+    text = ('fail_on = "critical"\nmin_confidence = "high"\ntriage_min_severity = "low"\n'
+            'max_input_tokens = 800000\n[[suppress]]\npath = "a/*"\nreason = "why"\n'
+            'expires = 2027-05-18\n')
+    base = commit(repo, {"x": "1"})
+    head = commit(repo, {".ai-security-gate.toml": text})
+    c, notice = gate.load_config(repo, base, head)
+    assert c.suppressions == ()
+    assert (c.fail_on, c.min_confidence, c.triage_min_severity) == ("high", "medium", "low")
+    assert c.max_input_tokens == 800000
+    assert notice == gate.NOTICE_HEAD
+
+
+def test_head_only_config_keeps_stricter_head_limits(repo):
+    base = commit(repo, {"x": "1"})
+    head = commit(repo, {".ai-security-gate.toml":
+                         'fail_on = "low"\nmin_confidence = "low"\n'
+                         'triage_min_severity = "critical"\n'})
+    c, _ = gate.load_config(repo, base, head)
+    assert (c.fail_on, c.min_confidence, c.triage_min_severity) == ("low", "low", "high")
+
+
+def test_base_config_wins_over_head_without_notice(repo):
+    base = commit(repo, {".ai-security-gate.toml": 'fail_on = "critical"\n'})
+    head = commit(repo, {".ai-security-gate.toml": 'fail_on = "low"\n'})
+    c, notice = gate.load_config(repo, base, head)
+    assert c.fail_on == "critical" and notice is None
 
 
 def test_config_in_neither_defaults(repo):

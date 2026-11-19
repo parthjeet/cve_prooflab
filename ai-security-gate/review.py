@@ -4,6 +4,7 @@
 Usage: review.py --repo DIR --base SHA --head SHA [options]
 Exit: 0 PASS, 1 BLOCK, 2 ERROR. The last line printed is `AI SECURITY GATE: <verdict>`.
 By default the output holds no model-written string (see --print-details).
+The summary file holds four model-written fields only with --public-details.
 """
 import argparse
 import json
@@ -205,10 +206,12 @@ def detail_lines(state):
     return out
 
 
-def summary_of(state):
-    """The evidence minus every model-written string."""
+def summary_of(state, details=False):
+    """The evidence minus model-written strings. With details, the summary also holds
+    title, impact, and fix of each finding and reason of each triage entry. It never
+    holds evidence, the answer summary, or error_detail."""
     a = state.get("agent") or {}
-    return {
+    summary = {
         "model_requested": MODEL,
         "model_returned": a.get("model_returned"),
         "final_stop_reason": a.get("final_stop_reason"),
@@ -220,17 +223,21 @@ def summary_of(state):
                       "usage": r["usage"]} for r in a.get("requests", [])],
         "tool_calls": a.get("tool_calls", []),
         "totals": a.get("totals"),
-        "findings": [{k: r["finding"][k] for k in ("severity", "confidence", "cwe", "file", "line")}
+        "findings": [{k: r["finding"][k] for k in ("severity", "confidence", "cwe", "file", "line")
+                      + (("title", "impact", "fix") if details else ())}
                      | {"ruling": r["ruling"], "suppression": r.get("suppression")}
                      for r in state["findings"]],
         "triage": [{k: r["entry"][k] for k in ("id", "package", "verdict", "confidence",
-                                               "file", "line")}
+                                               "file", "line") + (("reason",) if details else ())}
                    | {"ruling": r["ruling"], "suppression": r.get("suppression")}
                    for r in state["triage"]],
         "expired_suppressions": state["expired"],
         "verdict": state["verdict"], "error": state["error"],
         "error_request_id": a.get("error_request_id"),
     }
+    if details:
+        summary["details"] = True
+    return summary
 
 
 def evidence_of(state):
@@ -264,7 +271,7 @@ def jsonable_rulings(items):
 # ---- the review ----
 
 def run_review(repo, base_sha, head_sha, scanner_report=None, *, client=None,
-               print_details=False, evidence_path=None, summary_path=None, today=None,
+               print_details=False, public_details=False, evidence_path=None, summary_path=None, today=None,
                config_path=".ai-security-gate.toml"):
     today = today or date.today()
     state = {"base": base_sha, "head": head_sha, "changed_files": [], "limits": {},
@@ -332,7 +339,7 @@ def run_review(repo, base_sha, head_sha, scanner_report=None, *, client=None,
     lines.append(f"AI SECURITY GATE: {state['verdict']}")
     print("\n".join(lines))
     write_json(evidence_path, evidence_of(state))
-    write_json(summary_path, summary_of(state))
+    write_json(summary_path, summary_of(state, public_details))
     return {"verdict": state["verdict"], "blocking": blocking, "triage": triage_result,
             "error": state["error"]}
 
@@ -347,9 +354,11 @@ def main(argv=None):
     p.add_argument("--evidence-path", default="ai-security-gate-evidence.json")
     p.add_argument("--summary-path", default="ai-security-gate-summary.json")
     p.add_argument("--print-details", action="store_true")
+    p.add_argument("--public-details", action="store_true")
     a = p.parse_args(argv)
     result = run_review(a.repo, a.base, a.head, a.scanner_report,
-                        print_details=a.print_details, evidence_path=a.evidence_path,
+                        print_details=a.print_details, public_details=a.public_details,
+                        evidence_path=a.evidence_path,
                         summary_path=a.summary_path, config_path=a.config_path)
     return EXIT[result["verdict"]]
 

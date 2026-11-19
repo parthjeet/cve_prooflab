@@ -157,7 +157,7 @@
         "path": null,
         "id": "CVE-2026-48817",
         "cwe": null,
-        "reason": "Deliberate target for CVE-2026-48817: an HTTPEndpoint route with no methods= and a helper that returns fixed text. Vulnerable on purpose; the image stays local.",
+        "reason": "Risk accepted by the service owner until the upgrade to the fixed release ships.",
         "expires": "2027-05-18"
       }
     },

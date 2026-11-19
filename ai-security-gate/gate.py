@@ -10,7 +10,7 @@ import os
 import re
 import subprocess
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
@@ -18,7 +18,8 @@ SEVERITIES = ("low", "medium", "high", "critical")  # ascending
 CONFIDENCES = ("low", "medium", "high")  # ascending
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 CWE_RE = re.compile(r"^CWE-[0-9]+$")
-NOTICE_HEAD = "NOTICE: config taken from the change under review"
+NOTICE_HEAD = ("NOTICE: the base commit has no gate config; "
+               "suppressions in the change under review are ignored")
 
 FINDING_TYPES = {
     "title": str, "severity": str, "confidence": str, "cwe": str,
@@ -272,20 +273,34 @@ def git_show(repo_dir, rev, config_path):
     return r.stdout
 
 
+def stricter(head_value, default_value, order):
+    """The value that makes more findings block or go to triage (the lower one)."""
+    return min(head_value, default_value, key=order.index)
+
+
 def load_config(repo_dir, base, head, config_path=".ai-security-gate.toml"):
-    """Return (Config, notice). Read from base; fall back to head with a notice."""
-    notice = None
+    """Return (Config, notice). Read from base. With no config at base, use the limits
+    of head, drop its suppressions, and keep the stricter of head and the defaults."""
     text = git_show(repo_dir, base, config_path)
-    if text is None:
+    from_head = text is None
+    if from_head:
         text = git_show(repo_dir, head, config_path)
         if text is None:
             return Config(), None
-        notice = NOTICE_HEAD
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"invalid TOML: {e}") from None
-    return parse_config(data), notice
+    config = parse_config(data)
+    if not from_head:
+        return config, None
+    default = Config()
+    return replace(
+        config, suppressions=(),
+        fail_on=stricter(config.fail_on, default.fail_on, SEVERITIES),
+        min_confidence=stricter(config.min_confidence, default.min_confidence, CONFIDENCES),
+        triage_min_severity=stricter(config.triage_min_severity, default.triage_min_severity,
+                                     SEVERITIES)), NOTICE_HEAD
 
 
 # ---- judge ----
