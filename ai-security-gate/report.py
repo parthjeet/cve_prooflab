@@ -15,6 +15,8 @@ import unicodedata
 from urllib.parse import quote
 
 MARKER = "<!-- ai-security-gate-report -->"
+SCAN_MARKER = "<!-- security-scan-report -->"
+OPEN_FOLD = 10
 MAX_REPORT = 60000
 MAX_ROWS = 50
 SHORT = 200
@@ -231,12 +233,11 @@ def _accepted_row(key, count):
     return [cell, text(reason), code(expires), str(count)]
 
 
-def _scanner_rows(scanners, deps, codes, reviewed):
-    """One row per scanner: findings, accepted, cleared by the AI, blocking."""
-    def row(label, entries, cleared_rulings):
+def _scanner_rows(scanners, deps, codes):
+    """One row per scanner: findings, accepted by the owner, open."""
+    def row(label, entries):
         ruled = [e.get("ruling") for e in entries]
-        cleared = str(sum(r in cleared_rulings for r in ruled)) if reviewed else NOT_REVIEWED
-        return [label, str(len(entries)), str(ruled.count("suppressed")), cleared,
+        return [label, str(len(entries)), str(ruled.count("suppressed")),
                 str(ruled.count("blocking"))]
 
     def label(s):
@@ -249,7 +250,7 @@ def _scanner_rows(scanners, deps, codes, reviewed):
     dep_scanners = [s for s in scanners if s.get("kind") == "dependency"]
     if dep_scanners or deps:
         name = "Dependency scan" + (f" {label(dep_scanners[0])}" if dep_scanners else "")
-        rows.append(row(name, deps, ("cleared", "note")))
+        rows.append(row(name, deps))
     versions = {}
     for s in scanners:
         if s.get("kind") in (None, "code"):
@@ -259,7 +260,7 @@ def _scanner_rows(scanners, deps, codes, reviewed):
     for name, s in versions.items():
         text_label = label(s) if s else code(name)
         rows.append(row(f"Code scan {text_label}",
-                        [e for e in codes if tool(e.get("tool")) == name], ("cleared",)))
+                        [e for e in codes if tool(e.get("tool")) == name]))
     return rows
 
 
@@ -325,6 +326,125 @@ def pick_summary(summaries):
     return None, False
 
 
+def _accepted_fold(entries):
+    """The folded Accepted risks section, one row per suppression; empty with no entry."""
+    if not entries:
+        return []
+    groups = {}
+    for e in entries:
+        key = _sup_key(e)
+        groups[key] = groups.get(key, 0) + 1
+    out = [f"<details><summary>Accepted risks ({len(entries)} "
+           f"finding(s) under {len(groups)} suppression(s))</summary>", ""]
+    out += table(["Suppression", "Justification", "Expires", "Findings"],
+                 [_accepted_row(k, n) for k, n in groups.items()])
+    return out + ["", "The summary artifact of this run lists each accepted finding.", "",
+                  "</details>", ""]
+
+
+def _warnings(meta, model_warning=None):
+    """The notice line, an optional model line, and one line per expired suppression."""
+    warnings = []
+    if meta.get("notice"):
+        warnings.append("Warning: the base commit holds no gate config. The gate used the "
+                        "limits of this change and ignored its suppressions.")
+    if model_warning:
+        warnings.append(model_warning)
+    for s in _dicts(meta.get("expired_suppressions")):
+        which = s.get("id") or s.get("path")
+        warnings.append(f"Warning: a suppression has expired and no longer applies: "
+                        f"{code(which)}, expired on {code(s.get('expires'))}.")
+    return warnings
+
+
+def _cut(out):
+    result = "\n".join(out) + "\n"
+    if len(result) > MAX_REPORT:
+        tail = "\n\nThe report was cut at 60000 characters; see the summary artifact.\n"
+        result = result[:MAX_REPORT - len(tail)].rsplit("\n", 1)[0] + tail
+    return result
+
+
+def _sha(value):
+    return value if isinstance(value, str) and SHA_RE.match(value) else None
+
+
+def render_scan(baseline, repo=None, run_url=None):
+    """The scan comment: scanner results only, no text written by the AI."""
+    baseline = baseline if isinstance(baseline, dict) else None
+    repo = repo if isinstance(repo, str) and REPO_RE.match(repo) else None
+    run_url = run_url if isinstance(run_url, str) and RUN_URL_RE.match(run_url) else None
+    meta = baseline or {}
+    head, base = _sha(meta.get("head")), _sha(meta.get("base"))
+    verdict = _known(baseline)
+    done = verdict in ("PASS", "BLOCK")
+
+    deps = _dicts(meta.get("triage"))
+    codes = _dicts(meta.get("scan"))
+    limits = meta.get("limits") if isinstance(meta.get("limits"), dict) else {}
+    scanners = _dicts(meta.get("scanners"))
+    dep_scanner = next((s for s in scanners if s.get("kind") == "dependency"), None)
+    dep_name = f"{dep_scanner.get('name') or ''}" if dep_scanner else None
+    open_deps = [e for e in deps if e.get("ruling") == "blocking"]
+    open_codes = [e for e in codes if e.get("ruling") == "blocking"]
+    n_open = len(open_deps) + len(open_codes)
+    accepted = [e for e in deps + codes if e.get("ruling") == "suppressed"]
+
+    if not done:
+        heading = "did not finish"
+    elif verdict == "BLOCK":
+        heading = f"{n_open} open finding(s)"
+    else:
+        heading = "no open findings"
+    out = [SCAN_MARKER, "", f"## Security scan: {heading}", ""]
+    if not done:
+        error = meta.get("error")
+        what = (f"**The scan did not finish:** {text(error)}." if isinstance(error, str) and error
+                else "**The scan did not finish.**")
+        out.append(f"{what} The gate fails closed, so this change is blocked until a scan "
+                   "completes.")
+    elif n_open:
+        out.append("Each open finding blocks this change unless the AI review clears it or the "
+                   "repository owner accepts it.")
+    else:
+        out.append("No scanner finding is open.")
+    out.append("")
+
+    parts = [f"{code(base[:7])}..{code(head[:7])}"] if base and head else []
+    if run_url:
+        parts.append(f"[run]({run_url})")
+    if parts:
+        out += [" | ".join(parts), ""]
+    named = code(head[:7]) if head else "this commit"
+    out += ["The AI review posts its result in a separate comment when the review job ends. "
+            f"Until that comment names {named}, this change has not passed the gate.", ""]
+
+    if done:
+        out += [f"{len(deps) + len(codes)} finding(s) of "
+                f"{enum(limits.get('triage_min_severity'), SEVERITIES)} severity or higher: "
+                f"{len(accepted)} accepted by the owner, {n_open} open.", ""]
+        rows = _scanner_rows(scanners, deps, codes)
+        if rows:
+            out += table(["Scanner", "Findings", "Accepted by owner", "Open"], rows) + [""]
+        for w in _warnings(meta):
+            out += [w, ""]
+        if n_open:
+            rows = []
+            for e, kind in [(e, "dep") for e in open_deps] + [(e, "code") for e in open_codes]:
+                p = _parts(e, kind, repo, head, dep_name)
+                rows.append([p["flagged"], p["ident"], p["severity"], p["location"]])
+            shown = table(["Flagged by", "Finding", "Severity", "Location"], rows)
+            if n_open > OPEN_FOLD:
+                out += [f"<details><summary>Open findings ({n_open})</summary>", ""] + shown \
+                    + ["", "</details>", ""]
+            else:
+                out += ["### Open findings", ""] + shown + [""]
+        out += _accepted_fold(accepted)
+        out.append("This comment holds scanner results only: the advisory or rule ID, severity, "
+                   "and location. It holds no AI-written text.")
+    return _cut(out)
+
+
 def render(summary, repo=None, run_url=None, baseline=None, review_result=None, reviews=None,
            refusals=None):
     summary = summary if isinstance(summary, dict) else None
@@ -339,10 +459,7 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
     src = ai if ai is not None and (verdict != "ERROR" or baseline is None) else (baseline or {})
     reviewed = ai is not None and verdict != "ERROR"
 
-    head_raw = meta.get("head")
-    head = head_raw if isinstance(head_raw, str) and SHA_RE.match(head_raw) else None
-    base_raw = meta.get("base")
-    base = base_raw if isinstance(base_raw, str) and SHA_RE.match(base_raw) else None
+    head, base = _sha(meta.get("head")), _sha(meta.get("base"))
 
     findings = _dicts((ai or {}).get("findings"))
     deps = _dicts(src.get("triage"))
@@ -373,20 +490,26 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
     blocking_sentence = (f"**{n_block} blocking finding(s).** Resolve each one. To accept a risk "
                          "instead, the repository owner adds a suppression with a reason and an "
                          "expiry date to the gate's config file on the base branch.")
-    out = [MARKER, "", f"## AI Security Gate: {heading}", ""]
+    if mode == "baseline" and verdict in ("PASS", "BLOCK"):
+        heading = "not run"
+    out = [MARKER, "", f"## AI review: {heading}", ""]
     if picked_refusal:
         # The reader sees which model refused before anything else.
         for model, category in refusals:
             out += [refusal_line(model, category), ""]
         refusals = []
     if mode == "baseline":
-        out.append("The AI review did not run for this change. This result comes from the "
-                   "deterministic scanners alone.")
-        if verdict == "BLOCK":
-            out += ["", blocking_sentence]
-        elif verdict == "ERROR":
+        if verdict == "ERROR":
+            out.append("The AI review did not run for this change. This result comes from the "
+                       "deterministic scanners alone.")
             out += ["", f"**The scanner baseline did not finish:** {text(baseline.get('error'))}. "
                     "The gate fails closed, so this change is blocked until a baseline completes."]
+        else:
+            result_word = "passed" if verdict == "PASS" else "blocked"
+            out.append("The AI review did not run for this change. The gate result comes from "
+                       f"the deterministic scan alone: **{result_word}**.")
+            if verdict == "BLOCK":
+                out += ["", blocking_sentence]
     elif mode == "incomplete":
         out.append("**The AI review did not finish.** The gate fails closed, so this change is "
                    "blocked until a review completes.")
@@ -430,37 +553,26 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
     if ai:
         out += [f"Change findings: {len(f_block)} blocking, {len(f_sup)} accepted, "
                 f"{len(f_note)} notes.", ""]
-    middle = f"{len(t_clr) + len(c_clr)} cleared by the AI review" if reviewed \
-        else "none reviewed by the AI"
     scanners = _dicts((ai or {}).get("scanners")) or _dicts((baseline or {}).get("scanners"))
     dep_scanner = next((s for s in scanners if s.get("kind") == "dependency"), None)
     dep_name = f"{dep_scanner.get('name') or ''}" if dep_scanner else None
-    out += [f"Deterministic scan: {len(deps) + len(codes)} finding(s) of "
-            f"{enum(limits.get('triage_min_severity'), SEVERITIES)} severity or higher; "
-            f"{len(t_sup) + len(c_sup)} accepted by the owner, {middle}, "
-            f"{len(t_block) + len(c_block)} blocking.", ""]
-    rows = _scanner_rows(scanners, deps, codes, reviewed)
-    if rows:
-        out += table(["Scanner", "Findings", "Accepted by owner", "Cleared by AI", "Blocking"],
-                     rows) + [""]
+    n_cleared, n_open = len(t_clr) + len(c_clr), len(t_block) + len(c_block)
+    if reviewed:
+        out += [f"Scanner findings sent to the AI review: {n_cleared + n_open}; "
+                f"{n_cleared} cleared, {n_open} blocking.", ""]
+    elif n_open:
+        out += [f"{n_open} open scanner finding(s) were not reviewed by the AI. "
+                "The Security scan comment lists them.", ""]
 
-    warnings = []
-    if meta.get("notice"):
-        warnings.append("Warning: the base commit holds no gate config. The gate used the "
-                        "limits of this change and ignored its suppressions.")
     returned, requested = (ai or {}).get("model_returned"), (ai or {}).get("model_requested")
-    if returned is not None and returned != requested:
-        warnings.append("Warning: the model that answered differs from the model requested.")
-    for s in _dicts(meta.get("expired_suppressions")):
-        which = s.get("id") or s.get("path")
-        warnings.append(f"Warning: a suppression has expired and no longer applies: "
-                        f"{code(which)}, expired on {code(s.get('expires'))}.")
-    for w in warnings:
+    differs = "Warning: the model that answered differs from the model requested." \
+        if returned is not None and returned != requested else None
+    for w in _warnings(meta, differs):
         out += [w, ""]
 
     entries = ([(f, "change") for f in f_block] + [(t, "dep") for t in t_block]
                + [(c, "code") for c in c_block])
-    if entries:
+    if entries and reviewed:
         out += ["### Blocking findings", ""]
         rows = [_blocking_row(i, e, k, repo, head, dep_name)
                 for i, (e, k) in enumerate(entries, 1)]
@@ -479,17 +591,7 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
                 out += [f"Details of {len(entries) - MAX_BLOCKS} more findings are in the "
                         "summary artifact.", ""]
 
-    if f_sup or t_sup or c_sup:
-        groups = {}
-        for e in f_sup + t_sup + c_sup:
-            key = _sup_key(e)
-            groups[key] = groups.get(key, 0) + 1
-        out += [f"<details><summary>Accepted risks ({len(f_sup) + len(t_sup) + len(c_sup)} "
-                f"finding(s) under {len(groups)} suppression(s))</summary>", ""]
-        out += table(["Suppression", "Justification", "Expires", "Findings"],
-                     [_accepted_row(k, n) for k, n in groups.items()])
-        out += ["", "The summary artifact of this run lists each accepted finding.", "",
-                "</details>", ""]
+    out += _accepted_fold(f_sup)
 
     cleared = [(t, "dep") for t in t_clr] + [(c, "code") for c in c_clr]
     if cleared:
@@ -545,11 +647,7 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
         out.append("This report shows severity, weakness class, and location. "
                    "Finding descriptions are not published for this repository.")
 
-    result = "\n".join(out) + "\n"
-    if len(result) > MAX_REPORT:
-        tail = "\n\nThe report was cut at 60000 characters; see the summary artifact.\n"
-        result = result[:MAX_REPORT - len(tail)].rsplit("\n", 1)[0] + tail
-    return result
+    return _cut(out)
 
 
 def _load(path, label):
@@ -579,7 +677,13 @@ def main(argv=None):
     ap.add_argument("--verdict-out")
     ap.add_argument("--repo")
     ap.add_argument("--run-url")
+    ap.add_argument("--part", choices=("scan", "review"), default="review")
     args = ap.parse_args(argv)
+    if args.part == "scan":
+        sys.stdout.write(render_scan(_load(args.baseline, "baseline summary"), args.repo,
+                                     args.run_url))
+        sys.stdout.flush()
+        return 0
     paths = args.summary + ([args.summary_path] if args.summary_path else [])
     loaded = [_load(path, "summary") for path in paths]
     baseline = _load(args.baseline, "baseline summary")

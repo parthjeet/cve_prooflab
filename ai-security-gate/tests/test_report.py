@@ -65,17 +65,12 @@ def load(path):
 
 def test_real_pass_summary():
     out = report.render(real(), "o/r", None)
-    assert "## AI Security Gate: Passed" in out
+    assert "## AI review: Passed" in out
     assert "### Blocking findings" not in out
     assert "### Accepted risks" not in out
-    sup = out.split("<details><summary>Accepted risks (")[1].split("</details>")[0]
-    assert sup.startswith("1 finding(s) under 1 suppression(s))</summary>")
-    rows = [ln for ln in sup.splitlines() if ln.startswith("| ") and "CVE-" in ln]
-    assert len(rows) == 1
-    assert rows[0].startswith("| ID [<code>CVE-2026-48817</code>]") and rows[0].endswith("| 1 |")
-    assert "Risk accepted by the service owner until the upgrade to the fixed release ships." \
-        in rows[0]
-    assert "2027-05-18" in rows[0]
+    # the accepted scanner finding of the fixture shows in the scan comment, not here
+    assert "Accepted risks" not in out and "CVE-2026-48817" not in out
+    assert "Scanner findings sent to the AI review: 10; 10 cleared, 0 blocking." in out
     # the fixture predates the ruling "cleared"; its ten "note" entries read as cleared
     assert "Cleared by AI review (10)" in out and "Non-blocking findings (0)" in out
     assert "| Details |" not in out and "AI analysis" not in out
@@ -87,8 +82,8 @@ def test_real_pass_summary():
 
 def test_block_order():
     s = base_summary(verdict="BLOCK", findings=[change()], triage=[scan(id="CVE-2025-99999")])
-    s["triage"].append(scan(id="CVE-2025-11111", ruling="suppressed",
-                            suppression={"reason": "r", "expires": "2027-01-01"}))
+    s["findings"].append(change(ruling="suppressed", file="b.py",
+                                suppression={"reason": "r", "expires": "2027-01-01"}))
     out = report.render(s, "o/r")
     b, sp, d = (out.index("### Blocking findings"), out.index("<details><summary>Accepted risks"),
                 out.index("<details><summary>Non-blocking"))
@@ -97,14 +92,14 @@ def test_block_order():
     assert "CWE-22" in blocking and "CVE-2025-99999" in blocking
     assert BLOCKING_HEADER in blocking
     assert "AI review" in blocking and "Dependency scan" in blocking
-    assert "## AI Security Gate: Blocked" in out
+    assert "## AI review: Blocked" in out
     assert "**2 blocking finding(s).** Resolve each one." in out
 
 
 def test_error():
     s = base_summary(verdict="ERROR", error="boom happened", error_request_id="req_abc123")
     out = report.render(s)
-    assert "## AI Security Gate: Review incomplete" in out
+    assert "## AI review: Review incomplete" in out
     assert "**The review did not finish:** boom happened. The gate fails closed, so this " \
         "change is blocked until a review completes." in out
     assert "req_abc123" in out
@@ -184,7 +179,7 @@ def test_cli_absent_files(tmp_path):
     noverdict.write_text("{}")
     for p in (tmp_path / "missing.json", bad, lst, noverdict):
         r = run_cli(str(p))
-        assert r.returncode == 0 and "## AI Security Gate: Review incomplete" in r.stdout
+        assert r.returncode == 0 and "## AI review: Review incomplete" in r.stdout
         assert "**The AI review did not finish.**" in r.stdout
         assert len(r.stderr.strip().splitlines()) == 1
     r = run_cli()
@@ -310,12 +305,11 @@ def test_final_verdict_table():
 
 def test_ai_mode_with_scanner_rows():
     out = report.render(load(AI_BLOCK), "o/r", baseline=load(BASELINE_BLOCK), review_result="success")
-    assert "## AI Security Gate: Blocked" in out
+    assert "## AI review: Blocked" in out
     assert "**2 blocking finding(s).** Resolve each one." in out
     assert "Change findings: 0 blocking, 0 accepted, 0 notes." in out
-    assert ("Deterministic scan: 6 finding(s) of medium severity or higher; "
-            "2 accepted by the owner, 2 cleared by the AI review, 2 blocking.") in out
-    block = out.split("### Blocking findings")[1].split("<details><summary>Accepted risks")[0]
+    assert "Scanner findings sent to the AI review: 4; 2 cleared, 2 blocking." in out
+    block = out.split("### Blocking findings")[1].split("<details><summary>Cleared")[0]
     rows = [ln for ln in block.splitlines() if ln.startswith("| ") and "Flagged by" not in ln]
     assert len(rows) == 2
     dep, scan_row = rows
@@ -330,13 +324,10 @@ def test_ai_mode_with_scanner_rows():
             in block)
     assert "- AI analysis: The query joins a request value into the SQL text." in block
     assert "Recommended fix" not in block
-    accepted = out.split("<details><summary>Accepted risks (")[1].split("</details>")[0]
-    assert accepted.startswith("2 finding(s) under 2 suppression(s))</summary>")
-    assert "path <code>tests/&#42;&#42;</code>" in accepted
-    assert "path <code>docs/&#42;&#42;</code>" in accepted
-    assert "Test inputs only." in accepted and "Sample text&#44; not a secret." in accepted
-    assert (out.index("### Blocking findings") < out.index("Accepted risks (")
-            < out.index("Cleared by AI review") < out.index("Non-blocking findings"))
+    # accepted scanner findings show in the scan comment only
+    assert "Accepted risks" not in out and "Test inputs only." not in out
+    assert (out.index("### Blocking findings") < out.index("Cleared by AI review")
+            < out.index("Non-blocking findings"))
     cleared = out.split("Cleared by AI review (2)")[1].split("</details>")[0]
     assert CLEARED_HEADER[:-1] + "| AI analysis |" in cleared
     assert "not_reachable" in cleared and "false_positive" in cleared
@@ -366,55 +357,61 @@ def test_cleared_section_without_details():
 
 def test_baseline_mode_pass_and_block():
     out = report.render(None, "o/r", baseline=load(BASELINE_PASS), review_result="skipped")
-    assert "## AI Security Gate: Passed" in out
-    assert ("The AI review did not run for this change. This result comes from the "
-            "deterministic scanners alone.") in out
+    assert "## AI review: not run" in out
+    assert ("The AI review did not run for this change. The gate result comes from the "
+            "deterministic scan alone: **passed**.") in out
     assert "blocking finding(s)" not in out and "Change findings" not in out
-    assert ("Deterministic scan: 0 finding(s) of medium severity or higher; "
-            "0 accepted by the owner, none reviewed by the AI, 0 blocking.") in out
+    assert "not reviewed" not in out
     out = report.render(None, "o/r", baseline=load(BASELINE_BLOCK), review_result="skipped")
-    assert "## AI Security Gate: Blocked" in out
-    assert "The AI review did not run for this change." in out
+    assert "## AI review: not run" in out
+    assert ("The AI review did not run for this change. The gate result comes from the "
+            "deterministic scan alone: **blocked**.") in out
     assert "**2 blocking finding(s).** Resolve each one." in out
-    assert "none reviewed by the AI, 2 blocking" in out
-    assert out.count("not reviewed") == 5  # two blocking rows, three scanner-table cells
-    assert "requirements.txt" in out and "app/db.py" in out
+    assert out.count("not reviewed") == 1
+    assert "2 open scanner finding(s) were not reviewed by the AI. The Security scan comment " \
+        "lists them." in out
+    assert "### Blocking findings" not in out
+    assert "CVE-2025-12345" not in out and "python.sql.formatted-query" not in out
     assert "Cleared by AI review" not in out
     assert "Model:" not in out and "Scanners:" not in out
     assert "<code></code>" not in out and "A change finding blocks" not in out
     # a failed baseline, skipped review
     b = {**load(BASELINE_PASS), "verdict": "ERROR", "error": "report unreadable"}
     out = report.render(None, baseline=b, review_result="skipped")
-    assert "## AI Security Gate: Review incomplete" in out
+    assert "## AI review: Review incomplete" in out
     assert "**The scanner baseline did not finish:** report unreadable." in out
 
 
-def test_incomplete_mode_lists_open_findings():
+def test_incomplete_mode_counts_open_findings():
     for result in ("failure", "cancelled", "success", None):
         out = report.render(None, "o/r", baseline=load(BASELINE_BLOCK), review_result=result)
-        assert "## AI Security Gate: Review incomplete" in out
+        assert "## AI review: Review incomplete" in out
         assert ("**The AI review did not finish.** The gate fails closed, so this change is "
                 "blocked until a review completes.") in out
         assert "The AI review did not run" not in out
-        assert "### Blocking findings" in out and out.count("not reviewed") == 5
-        assert "CVE-2025-12345" in out and "python.sql.formatted-query" in out
+        assert "### Blocking findings" not in out and out.count("not reviewed") == 1
+        assert "2 open scanner finding(s) were not reviewed by the AI. The Security scan " \
+            "comment lists them." in out
+        assert "CVE-2025-12345" not in out and "python.sql.formatted-query" not in out
     out = report.render(None)
-    assert "Review incomplete" in out and "### " not in out
+    assert "Review incomplete" in out and "### " not in out and "not reviewed" not in out
 
 
-def test_ai_error_lists_baseline_findings():
+def test_ai_error_counts_baseline_findings():
     s = load(AI_BLOCK)
     s.update(verdict="ERROR", error="limit reached: triage findings", error_request_id=None,
              triage=[], scan=[])
     out = report.render(s, "o/r", baseline=load(BASELINE_BLOCK), review_result="failure")
     assert "**The review did not finish:** limit reached&#58; triage findings." in out
-    assert "### Blocking findings" in out and out.count("not reviewed") == 5
-    assert "none reviewed by the AI" in out
+    assert "### Blocking findings" not in out and out.count("not reviewed") == 1
+    assert "2 open scanner finding(s) were not reviewed by the AI." in out
     assert "Model: <code>m-1</code>" in out
-    # without a baseline the AI summary's own entries are used
+    # without a baseline the AI summary's own entries are counted
     s2 = load(AI_BLOCK)
     s2.update(verdict="ERROR", error="x")
-    assert "### Blocking findings" in report.render(s2)
+    out = report.render(s2)
+    assert "### Blocking findings" not in out
+    assert "2 open scanner finding(s) were not reviewed by the AI." in out
 
 
 def test_code_scan_rows_and_accepted():
@@ -423,13 +420,11 @@ def test_code_scan_rows_and_accepted():
                                  suppression={"reason": "r", "expires": "2027-01-01"}),
         code_entry(key="S3", ruling="cleared", verdict="false_positive", file="", line=0)])
     out = report.render(s, "o/r")
-    assert "Code scan <code>example-sast</code>" in out  # scanner table row
-    assert "Accepted risks (1 finding(s) under 1 suppression(s))" in out
+    assert "| Scanner |" not in out and "Accepted risks" not in out
     assert "Cleared by AI review (1)" in out
     assert "Non-blocking findings (0)" in out
     assert "not reviewed" not in out
-    assert "Deterministic scan: 3 finding(s)" in out
-    assert "1 accepted by the owner, 1 cleared by the AI review, 1 blocking." in out
+    assert "Scanner findings sent to the AI review: 2; 1 cleared, 1 blocking." in out
 
 
 def test_hostile_scanner_strings():
@@ -468,8 +463,8 @@ def test_verdict_file_and_stdout(tmp_path):
         (["--summary", str(FIXTURE), "--review-result", "success"], "PASS", "Passed"),
         (["--summary", str(AI_BLOCK), "--baseline", str(BASELINE_BLOCK),
           "--review-result", "success"], "BLOCK", "Blocked"),
-        (["--baseline", str(BASELINE_PASS), "--review-result", "skipped"], "PASS", "Passed"),
-        (["--baseline", str(BASELINE_BLOCK), "--review-result", "skipped"], "BLOCK", "Blocked"),
+        (["--baseline", str(BASELINE_PASS), "--review-result", "skipped"], "PASS", "not run"),
+        (["--baseline", str(BASELINE_BLOCK), "--review-result", "skipped"], "BLOCK", "not run"),
         (["--baseline", str(BASELINE_BLOCK), "--review-result", "failure"], "ERROR",
          "Review incomplete"),
         (["--summary", str(tmp_path / "missing.json"), "--baseline", str(BASELINE_PASS),
@@ -482,7 +477,7 @@ def test_verdict_file_and_stdout(tmp_path):
         assert r.returncode == 0, r.stderr
         assert out_file.read_text().strip() == verdict
         assert r.stdout.splitlines()[0] == report.MARKER
-        assert f"## AI Security Gate: {heading}" in r.stdout
+        assert f"## AI review: {heading}" in r.stdout
     # an unwritable verdict file does not stop the markdown
     r = run_cli("--summary", str(FIXTURE), "--verdict-out", str(tmp_path / "no" / "v.txt"))
     assert r.returncode == 0 and r.stdout.startswith(report.MARKER)
@@ -561,7 +556,7 @@ def test_cli_several_summaries(tmp_path):
         assert ("Reviews in this run" in r.stdout) == line, paths
     r = run_cli("--summary", str(FIXTURE), "--summary", str(AI_BLOCK_OPUS),
                 "--verdict-out", str(tmp_path / "v.txt"))
-    assert "## AI Security Gate: Blocked" in r.stdout
+    assert "## AI review: Blocked" in r.stdout
     assert ("Reviews in this run: <code>claude-mythos-5-2</code> PASS, "
             "<code>claude-opus-5-5</code> BLOCK. The report below is from "
             "<code>claude-opus-5-5</code>.") in r.stdout
@@ -598,7 +593,7 @@ def refused(**kw):
 
 def test_single_refusal(tmp_path):
     out = report.render(load(AI_REFUSAL), reviews=[("claude-mythos-5-2", "REFUSED")])
-    assert "## AI Security Gate: Review refused" in out
+    assert "## AI review: Review refused" in out
     line = REFUSAL_LINE.format(m="<code>claude-mythos-5-2</code>", c=", category: <code>cyber</code>")
     assert line in out
     assert "did not finish" not in out and "Review incomplete" not in out
@@ -607,7 +602,7 @@ def test_single_refusal(tmp_path):
     out_file = tmp_path / "v.txt"
     r = run_cli("--summary", str(AI_REFUSAL), "--verdict-out", str(out_file))
     assert out_file.read_text().strip() == "ERROR"
-    assert "## AI Security Gate: Review refused" in r.stdout and line in r.stdout
+    assert "## AI review: Review refused" in r.stdout and line in r.stdout
     assert "Reviews in this run" not in r.stdout
 
 
@@ -627,7 +622,7 @@ def test_refusal_without_category():
 def test_refusal_with_block_and_pass(tmp_path):
     r = run_cli("--summary", str(AI_REFUSAL), "--summary", str(AI_BLOCK_OPUS),
                 "--verdict-out", str(tmp_path / "v.txt"))
-    assert "## AI Security Gate: Blocked" in r.stdout
+    assert "## AI review: Blocked" in r.stdout
     assert REFUSAL_LINE.format(m="<code>claude-mythos-5-2</code>",
                                c=", category: <code>cyber</code>") in r.stdout
     assert ("Reviews in this run: <code>claude-mythos-5-2</code> REFUSED, "
@@ -636,7 +631,7 @@ def test_refusal_with_block_and_pass(tmp_path):
     assert (tmp_path / "v.txt").read_text().strip() == "BLOCK"
     r = run_cli("--summary", str(FIXTURE), "--summary", str(AI_REFUSAL),
                 "--verdict-out", str(tmp_path / "w.txt"))
-    assert "## AI Security Gate: Review refused" in r.stdout
+    assert "## AI review: Review refused" in r.stdout
     assert "Reviews in this run: <code>claude-mythos-5-2</code> PASS, " \
         "<code>claude-mythos-5-2</code> REFUSED." in r.stdout
     assert "refused to run" in r.stdout
@@ -661,7 +656,7 @@ def test_other_error_keeps_generic_text():
                      requests=[{"request_id": "r", "stop_reason": "end_turn",
                                 "stop_category": None}])
     out = report.render(s)
-    assert "## AI Security Gate: Review incomplete" in out
+    assert "## AI review: Review incomplete" in out
     assert "**The review did not finish:** limit reached&#58; triage findings." in out
     assert "refused" not in out
     # a PASS summary with a refusal-looking stop reason is not a refusal
@@ -685,9 +680,11 @@ def test_refusal_names_the_model_that_answered(tmp_path):
         assert "<code>m-req</code> refused to run" in out
 
 
-def sup_entry(kind="dep", **sup):
+def sup_entry(kind="change", **sup):
     full = {"path": None, "id": None, "cwe": None, "reason": "r", "expires": "2027-01-01"}
     full.update(sup)
+    if kind == "change":
+        return change(ruling="suppressed", suppression=full)
     if kind == "dep":
         return scan(ruling="suppressed", suppression=full)
     return code_entry(ruling="suppressed", suppression=full)
@@ -704,7 +701,7 @@ def accepted_rows(out):
 
 def test_accepted_findings_fold_into_one_row():
     fs = [sup_entry(path="x/d", reason="why") for _ in range(229)]
-    out = report.render(base_summary(triage=fs))
+    out = report.render(base_summary(findings=fs))
     assert "Accepted risks (229 finding(s) under 1 suppression(s))" in out
     rows = accepted_rows(out)
     assert len(rows) == 1
@@ -715,31 +712,32 @@ def test_accepted_findings_fold_into_one_row():
 
 
 def test_accepted_rows_keep_first_appearance_order():
-    s = base_summary(triage=[sup_entry(path="b/d"), sup_entry(path="a/d"),
-                             sup_entry(path="b/d")],
-                     scan=[sup_entry("code", path="c/d")])
+    s = base_summary(findings=[sup_entry(path="b/d"), sup_entry(path="a/d"),
+                               sup_entry(path="b/d"), sup_entry(path="c/d")])
     out = report.render(s)
     assert "Accepted risks (4 finding(s) under 3 suppression(s))" in out
     rows = accepted_rows(out)
     assert [r.split("</code>")[0].split("<code>")[1] for r in rows] == ["b/d", "a/d", "c/d"]
     assert rows[0].endswith("| 2 |") and rows[1].endswith("| 1 |")
     # entries that share path and reason but differ in id are separate rows
-    s = base_summary(triage=[sup_entry(path="p", id="CVE-2025-1111"),
-                             sup_entry(path="p", id="CVE-2025-2222")])
+    s = base_summary(findings=[sup_entry(path="p", id="CVE-2025-1111"),
+                               sup_entry(path="p", id="CVE-2025-2222")])
     assert len(accepted_rows(report.render(s))) == 2
 
 
-def test_accepted_input_order_is_change_dep_code():
-    s = base_summary(findings=[change(ruling="suppressed", suppression={
-                         "path": "f/d", "id": None, "cwe": None, "reason": "r", "expires": "e"})],
-                     triage=[sup_entry(path="t/d")], scan=[sup_entry("code", path="c/d")])
+def test_accepted_scanner_findings_give_no_section():
+    s = base_summary(triage=[sup_entry("dep", path="t/d")], scan=[sup_entry("code", path="c/d")])
+    assert "Accepted risks" not in report.render(s)
+    # only the accepted change finding is listed
+    s["findings"] = [sup_entry(path="f/d")]
     rows = accepted_rows(report.render(s))
-    assert ["f/d" in rows[0], "t/d" in rows[1], "c/d" in rows[2]] == [True] * 3
+    assert len(rows) == 1 and "f/d" in rows[0]
+    assert "Accepted risks (1 finding(s) under 1 suppression(s))" in report.render(s)
 
 
 def test_accepted_suppression_cell():
     def cell(**sup):
-        return accepted_rows(report.render(base_summary(triage=[sup_entry(**sup)])))[0] \
+        return accepted_rows(report.render(base_summary(findings=[sup_entry(**sup)])))[0] \
             .split(" | ")[0]
     assert cell(path="a/b") == "| path <code>a/b</code>"
     assert cell(id="CVE-2025-1111") == ("| ID [<code>CVE-2025-1111</code>]"
@@ -751,8 +749,9 @@ def test_accepted_suppression_cell():
                                   "(https://cwe.mitre.org/data/definitions/22.html)")
     assert cell() == "| -"
     # a suppression that is not an object, or holds non-string values, gives no parts
-    s = base_summary(triage=[scan(ruling="suppressed", suppression="x"),
-                             scan(ruling="suppressed", suppression={"path": 5, "id": ["x"]})])
+    s = base_summary(findings=[change(ruling="suppressed", suppression="x"),
+                               change(ruling="suppressed",
+                                      suppression={"path": 5, "id": ["x"]})])
     out = report.render(s)
     assert "under 1 suppression(s))" in out
     assert accepted_rows(out)[0].startswith("| - |")
@@ -766,8 +765,8 @@ def test_no_accepted_findings_no_section():
 def test_accepted_hostile_values():
     evil = "<script>`x`|a\n::error::x @someone ](http://x)"
     big = "Z" * 5000
-    s = base_summary(triage=[sup_entry(path=evil + big, id=evil, cwe=evil, reason=evil + big,
-                                       expires=evil + big)])
+    s = base_summary(findings=[sup_entry(path=evil + big, id=evil, cwe=evil, reason=evil + big,
+                                         expires=evil + big)])
     out = report.render(s)
     assert "<script" not in out and "`" not in out and "@someone" not in out
     assert "](http://x)" not in out
@@ -813,7 +812,7 @@ def dep(**kw):
 
 
 def scanner_rows(out):
-    block = out.split("| Scanner | Findings | Accepted by owner | Cleared by AI | Blocking |")[1]
+    block = out.split("| Scanner | Findings | Accepted by owner | Open |")[1]
     lines = block.split("\n\n")[0].splitlines()[2:]
     return [[c.strip() for c in ln.strip("|").split(" | ")] for ln in lines]
 
@@ -822,56 +821,276 @@ def sup(**kw):
     return {"reason": "r", "expires": "2027-01-01", **kw}
 
 
-def test_scanner_table_counts_and_place():
-    s = detailed(
-        triage=[dep(), dep(ruling="suppressed", suppression=sup()),
-                dep(ruling="cleared", verdict="not_reachable"),
-                dep(ruling="note", verdict="not_reachable")],
-        scan=[code_entry(), code_entry(ruling="cleared", verdict="false_positive"),
-              code_entry(ruling="suppressed", suppression=sup()),
+def scan_out(baseline, **kw):
+    return report.render_scan(baseline, "o/r", **kw)
+
+
+def blocked(**kw):
+    return base_summary(verdict="BLOCK", **kw)
+
+
+def test_scan_table_counts_and_place():
+    s = blocked(
+        triage=[dep(), dep(), dep(ruling="suppressed", suppression=sup())],
+        scan=[code_entry(), code_entry(ruling="suppressed", suppression=sup()),
               code_entry(tool="other-sast", ruling="blocking")],
         scanners=[{"name": "Trivy", "version": "9.9", "kind": "dependency"},
                   {"name": "example-sast", "version": "1.0", "kind": "code"},
                   {"name": "idle", "version": "2", "kind": "code"}])
-    out = report.render(s, "o/r")
+    out = scan_out(s)
+    assert "| Scanner | Findings | Accepted by owner | Open |" in out
     assert scanner_rows(out) == [
-        ["Dependency scan <code>Trivy 9.9</code>", "4", "1", "2", "1"],
-        ["Code scan <code>example-sast 1.0</code>", "3", "1", "1", "1"],
-        ["Code scan <code>idle 2</code>", "0", "0", "0", "0"],
-        ["Code scan <code>other-sast</code>", "1", "0", "0", "1"]]
+        ["Dependency scan <code>Trivy 9.9</code>", "3", "1", "2"],
+        ["Code scan <code>example-sast 1.0</code>", "2", "1", "1"],
+        ["Code scan <code>idle 2</code>", "0", "0", "0"],
+        ["Code scan <code>other-sast</code>", "1", "0", "1"]]
     rows = scanner_rows(out)
-    assert [sum(int(r[i]) for r in rows) for i in (1, 2, 3, 4)] == [8, 2, 3, 3]
-    assert ("Deterministic scan: 8 finding(s) of medium severity or higher; 2 accepted by the "
-            "owner, 3 cleared by the AI review, 3 blocking.") in out
-    assert out.index("Deterministic scan:") < out.index("| Scanner |") \
-        < out.index("### Blocking findings")
+    assert all(int(r[1]) == int(r[2]) + int(r[3]) for r in rows)
+    totals = [sum(int(r[i]) for r in rows) for i in (1, 2, 3)]
+    assert totals == [6, 2, 4]
+    assert "6 finding(s) of medium severity or higher: 2 accepted by the owner, 4 open." in out
+    assert out.index("| Scanner |") < out.index("### Open findings")
 
 
-def test_scanner_table_kind_rules():
+def test_scan_table_kind_rules():
     # no kind counts as code; no dependency scanner named gives a bare label
-    s = base_summary(triage=[dep()], scanners=[{"name": "old-sast", "version": "1"}])
-    rows = scanner_rows(report.render(s))
+    s = blocked(triage=[dep()], scanners=[{"name": "old-sast", "version": "1"}])
+    rows = scanner_rows(scan_out(s))
     assert rows[0][0] == "Dependency scan"
     assert rows[1][0] == "Code scan <code>old-sast 1</code>"
     # a dependency scanner with no findings keeps its row of zeros
     s = base_summary(scanners=[{"name": "Trivy", "version": "9.9", "kind": "dependency"}])
-    assert scanner_rows(report.render(s)) == [
-        ["Dependency scan <code>Trivy 9.9</code>", "0", "0", "0", "0"]]
+    assert scanner_rows(scan_out(s)) == [["Dependency scan <code>Trivy 9.9</code>", "0", "0", "0"]]
     # no scanner and no finding: no table
-    assert "| Scanner |" not in report.render(base_summary())
+    assert "| Scanner |" not in scan_out(base_summary())
 
 
-def test_scanner_table_not_reviewed():
+def test_scan_markers_differ():
+    out = scan_out(base_summary())
+    assert out.splitlines()[0] == report.SCAN_MARKER == "<!-- security-scan-report -->"
+    assert report.render(base_summary()).splitlines()[0] == report.MARKER
+    assert report.SCAN_MARKER != report.MARKER
+    assert not report.SCAN_MARKER.startswith(report.MARKER)
+    assert not report.MARKER.startswith(report.SCAN_MARKER)
+
+
+def test_scan_headings_and_status():
+    out = scan_out(blocked(triage=[dep(), dep()], scan=[code_entry()]))
+    assert "## Security scan: 3 open finding(s)\n" in out
+    assert ("Each open finding blocks this change unless the AI review clears it or the "
+            "repository owner accepts it.") in out
+    out = scan_out(base_summary())
+    assert "## Security scan: no open findings\n" in out
+    assert "No scanner finding is open." in out
+    for b in (base_summary(verdict="ERROR", error="report unreadable"), None,
+              base_summary(verdict="MAYBE")):
+        out = scan_out(b)
+        assert "## Security scan: did not finish\n" in out
+        assert "The gate fails closed, so this change is blocked until a scan completes." in out
+        assert "### Open findings" not in out and "| Scanner |" not in out
+        assert "finding(s) of" not in out and "This comment holds scanner results" not in out
+    assert ("**The scan did not finish:** report unreadable. The gate fails closed, so this "
+            "change is blocked until a scan completes.") in scan_out(
+                base_summary(verdict="ERROR", error="report unreadable"))
+    assert "**The scan did not finish.** The gate fails closed" in scan_out(
+        base_summary(verdict="ERROR", error=None))
+
+
+def test_scan_meta_and_ai_review_line():
+    out = scan_out(base_summary(), run_url="https://github.com/o/r/actions/runs/5")
+    assert f"<code>{BASE[:7]}</code>..<code>{HEAD[:7]}</code> | " \
+        "[run](https://github.com/o/r/actions/runs/5)" in out
+    assert ("The AI review posts its result in a separate comment when the review job ends. "
+            f"Until that comment names <code>{HEAD[:7]}</code>, this change has not passed the "
+            "gate.") in out
+    out = scan_out(base_summary(head="not-a-sha", base="zz"), run_url="https://evil.example/x")
+    assert "Until that comment names this commit, this change has not passed the gate." in out
+    assert "..<code>" not in out and "[run]" not in out and "evil.example" not in out
+
+
+def test_scan_open_findings_fold():
+    out = scan_out(blocked(triage=[dep(id="CVE-2025-1"), dep(id="CVE-2025-2")]))
+    assert "### Open findings" in out and "<details><summary>Open findings" not in out
+    assert "| Flagged by | Finding | Severity | Location |" in out
+    open_rows = [ln for ln in out.split("### Open findings")[1].splitlines()
+                 if ln.startswith("| ") and "CVE-" in ln]
+    assert len(open_rows) == 2 and all(r.count(" | ") == 3 for r in open_rows)
+    ten = scan_out(blocked(triage=[dep(id=f"CVE-2025-{i}") for i in range(10)]))
+    assert "### Open findings" in ten and "<details><summary>Open findings" not in ten
+    out = scan_out(blocked(triage=[dep(id=f"CVE-2025-{i}") for i in range(11)]))
+    assert "<details><summary>Open findings (11)</summary>" in out
+    assert "### Open findings" not in out
+    assert out.count("CVE-2025-") >= 11 and "</details>" in out
+
+
+def test_scan_rows_dependency_first_then_code():
+    s = blocked(triage=[dep(id="CVE-2025-1111", fixed_version="1.2.4"),
+                        dep(id="CVE-2025-2222", ruling="cleared"),
+                        dep(id="CVE-2025-3333", ruling="suppressed", suppression=sup())],
+                scan=[code_entry()],
+                scanners=[{"name": "Trivy", "version": "9", "kind": "dependency"}])
+    out = scan_out(s)
+    shown = out.split("### Open findings")[1].split("<details>")[0]
+    rows = [ln for ln in shown.splitlines() if ln.startswith("| ") and "Flagged" not in ln]
+    assert len(rows) == 2
+    dep_row, code_row = rows
+    assert "https://www.cve.org/CVERecord?id=CVE-2025-1111" in dep_row
+    assert "<code>pkgtool 1.2.3</code>, fixed in <code>1.2.4</code>" in dep_row
+    assert dep_row.startswith("| <code>Trivy</code> |")
+    assert code_row.startswith("| <code>example-sast</code> | <code>python.sql.formatted-query")
+    assert "no fixed version listed" in scan_out(blocked(triage=[dep(fixed_version="")]))
+    assert "CVE-2025-2222" not in shown and "CVE-2025-3333" not in shown
+
+
+def test_scan_accepted_risks_fold():
+    fs = [dep(ruling="suppressed", suppression=sup(path="x/d")) for _ in range(5)]
+    cs = [code_entry(ruling="suppressed", suppression=sup(path="c/d"))]
+    out = scan_out(blocked(triage=fs + [dep(ruling="suppressed", suppression=sup(path="y/d"))],
+                           scan=cs))
+    assert "Accepted risks (7 finding(s) under 3 suppression(s))" in out
+    rows = accepted_rows(out)
+    assert len(rows) == 3
+    assert rows[0] == "| path <code>x/d</code> | r | <code>2027-01-01</code> | 5 |"
+    assert "Accepted risks" not in scan_out(base_summary())
+
+
+def test_scan_warnings():
+    out = scan_out(base_summary(notice="x", expired_suppressions=[
+        {"path": None, "id": "CVE-2025-1111", "cwe": None, "reason": "r",
+         "expires": "2026-01-01"}]))
+    assert "Warning: the base commit holds no gate config." in out
+    assert "has expired" in out and "CVE-2025-1111" in out
+
+
+def test_scan_never_holds_ai_text():
+    s = blocked(
+        triage=[dep(verdict="reachable", reason="SENTINEL-REASON"),
+                dep(ruling="suppressed", suppression=sup(), verdict=None)],
+        scan=[code_entry(verdict="true_positive", confidence="high", reason="SENTINEL-REASON"),
+              code_entry(ruling="cleared", verdict="false_positive")],
+        details=True, findings=[change(title="SENTINEL-TITLE")])
+    for out in (scan_out(s), scan_out(base_summary())):
+        for word in ("not reviewed", "AI verdict", "Cleared by AI", "Model:", "AI analysis",
+                     "SENTINEL"):
+            assert word not in out, word
+    assert ("This comment holds scanner results only: the advisory or rule ID, severity, and "
+            "location. It holds no AI-written text.") in scan_out(s)
+
+
+def test_scan_hostile_strings():
+    big = "Z" * 5000
+    evil = "<script>`x`|a\n::error::x @someone ](http://x)"
+    s = blocked(
+        error=evil, notice=evil,
+        triage=[dep(id=evil + big, package=evil + big, target=evil + big,
+                    installed_version=evil, fixed_version=evil + big, severity=evil),
+                dep(ruling="suppressed", suppression={"path": evil + big, "id": evil,
+                                                      "cwe": evil, "reason": evil + big,
+                                                      "expires": evil})],
+        scan=[code_entry(tool=evil + big, rule_id=evil + big, file=evil + big, severity=evil)],
+        scanners=[{"name": evil, "version": evil + big, "kind": "dependency"}],
+        expired_suppressions=[{"id": evil, "path": evil, "expires": evil}],
+        limits={"triage_min_severity": evil})
+    out = scan_out(s)
+    assert "<script" not in out and "`" not in out and "@someone" not in out
+    assert "](http://x)" not in out
+    assert not any(ln.startswith("::") for ln in out.splitlines())
+    for m in re.findall(r"<code>(.*?)</code>", out):
+        assert m.count("Z") <= 200
+    assert all(ln.endswith("|") for ln in out.splitlines() if ln.startswith("|"))
+    bad = scan_out(base_summary(verdict="ERROR", error=evil + big))
+    assert "<script" not in bad and "@someone" not in bad and "Z" * 301 not in bad
+    assert not any(ln.startswith("::") for ln in bad.splitlines())
+
+
+def test_scan_size_cap():
+    out = scan_out(blocked(triage=[dep(id="X" * 190 + str(i)) for i in range(1000)],
+                           scan=[code_entry(file="f" * 150 + str(i)) for i in range(1000)]))
+    assert len(out) <= 60000
+
+
+def test_scan_cli(tmp_path):
+    verdict = tmp_path / "v.txt"
+    r = run_cli("--part", "scan", "--baseline", str(BASELINE_BLOCK), "--repo", "o/r",
+                "--run-url", "https://github.com/o/r/actions/runs/5",
+                "--summary", str(tmp_path / "ignored.json"), "--review-result", "failure",
+                "--verdict-out", str(verdict))
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.splitlines()[0] == report.SCAN_MARKER
+    assert "## Security scan: 2 open finding(s)" in r.stdout
+    assert "[run](https://github.com/o/r/actions/runs/5)" in r.stdout
+    assert not verdict.exists()
+    r = run_cli("--part", "scan", "--baseline", str(tmp_path / "missing.json"),
+                "--verdict-out", str(verdict))
+    assert r.returncode == 0
+    assert "## Security scan: did not finish" in r.stdout and not verdict.exists()
+    r = run_cli("--part", "scan")
+    assert r.returncode == 0 and "did not finish" in r.stdout
+    # the default part is review
+    r = run_cli("--summary", str(FIXTURE))
+    assert r.stdout.splitlines()[0] == report.MARKER
+
+
+def test_review_has_no_scanner_table_or_deterministic_line():
+    cases = [report.render(load(AI_BLOCK), "o/r", baseline=load(BASELINE_BLOCK),
+                           review_result="success"),
+             report.render(real(), "o/r"),
+             report.render(None, "o/r", baseline=load(BASELINE_BLOCK), review_result="skipped"),
+             report.render(None, "o/r", baseline=load(BASELINE_BLOCK), review_result="failure"),
+             report.render(None),
+             report.render(load(AI_REFUSAL), baseline=load(BASELINE_BLOCK),
+                           review_result="failure")]
+    for out in cases:
+        assert "| Scanner |" not in out and "Deterministic scan:" not in out
+        assert out.splitlines()[2].startswith("## AI review: ")
+
+
+def test_review_reviewed_scanner_line():
+    out = report.render(load(AI_BLOCK), "o/r", baseline=load(BASELINE_BLOCK),
+                        review_result="success")
+    assert "Scanner findings sent to the AI review: 4; 2 cleared, 2 blocking.\n" in out
+    s = base_summary(verdict="PASS", triage=[scan(ruling="cleared", verdict="not_reachable"),
+                                             scan(ruling="note", verdict="not_reachable")],
+                     scan=[code_entry(ruling="cleared", verdict="false_positive"),
+                           code_entry(ruling="suppressed", suppression=sup())])
+    assert "Scanner findings sent to the AI review: 3; 3 cleared, 0 blocking." in report.render(s)
+
+
+def test_review_not_reviewed_modes():
     base = load(BASELINE_BLOCK)
-    for result in ("skipped", "failure"):
-        out = report.render(None, "o/r", baseline=base, review_result=result)
-        assert all(r[3] == "not reviewed" for r in scanner_rows(out))
-    s = load(AI_BLOCK)
-    s.update(verdict="ERROR", error="x")
-    out = report.render(s, "o/r", baseline=base, review_result="failure")
-    assert all(r[3] == "not reviewed" for r in scanner_rows(out))
-    out = report.render(load(AI_REFUSAL), baseline=base, review_result="failure")
-    assert all(r[3] == "not reviewed" for r in scanner_rows(out))
+    line = ("2 open scanner finding(s) were not reviewed by the AI. The Security scan comment "
+            "lists them.")
+    ai_err = load(AI_BLOCK)
+    ai_err.update(verdict="ERROR", error="x", triage=[], scan=[])
+    cases = [report.render(None, "o/r", baseline=base, review_result="skipped"),
+             report.render(None, "o/r", baseline=base, review_result="failure"),
+             report.render(ai_err, "o/r", baseline=base, review_result="failure"),
+             report.render(load(AI_REFUSAL), baseline=base, review_result="failure")]
+    for out in cases:
+        assert line in out
+        assert "### Blocking findings" not in out and "AI verdict" not in out
+        assert "CVE-" not in out and "formatted-query" not in out
+    # no open entry: no line
+    for out in (report.render(None, baseline=load(BASELINE_PASS), review_result="skipped"),
+                report.render(None, baseline=load(BASELINE_PASS), review_result="failure")):
+        assert "were not reviewed" not in out
+    assert "were not reviewed" not in report.render(None)
+    # a failed baseline gives the old text and no scanner line
+    b = {**load(BASELINE_PASS), "verdict": "ERROR", "error": "x"}
+    out = report.render(None, baseline=b, review_result="skipped")
+    assert "were not reviewed" not in out and "Scanner findings sent" not in out
+
+
+def test_review_accepted_risks_from_change_findings_only():
+    s = base_summary(triage=[sup_entry("dep", path="t/d")], scan=[sup_entry("code", path="c/d")])
+    assert "Accepted risks" not in report.render(s)
+    s["findings"] = [sup_entry(path="f/d")]
+    out = report.render(s)
+    assert "Accepted risks (1 finding(s) under 1 suppression(s))" in out
+    out = report.render(None, baseline={**base_summary(verdict="BLOCK"),
+                                        "triage": [sup_entry("dep", path="t/d")]},
+                        review_result="skipped")
+    assert "Accepted risks" not in out
 
 
 def test_table_headers():
@@ -977,7 +1196,7 @@ def test_clear_rule_sentence():
                  findings=[change()])
     assert F2_LINE not in report.render(s, "o/r")
     out = report.render(None, "o/r", baseline=load(BASELINE_BLOCK), review_result="skipped")
-    assert "### Blocking findings" in out and F2_LINE not in out
+    assert "### Blocking findings" not in out and F2_LINE not in out
 
 
 def test_cut_values_end_with_dots():
