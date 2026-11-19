@@ -69,12 +69,23 @@ def test_block_and_summary_shape(tmp_path, capsys):
     assert set(summary) == {"kind", "verdict", "error", "base", "head", "notice", "limits",
                             "scanners", "triage", "scan", "expired_suppressions"}
     assert summary["limits"] == {"triage_min_severity": "high"}
-    assert summary["scanners"] == [{"name": "example-sast", "version": "1.0"}]
+    assert summary["scanners"] == [{"name": "Trivy", "version": "", "kind": "dependency"},
+                                   {"name": "example-sast", "version": "1.0", "kind": "code"}]
     t = summary["triage"][0]
     assert t["installed_version"] == "1.0" and t["fixed_version"] == "1.1"
     assert t["verdict"] is None and t["confidence"] is None and t["ruling"] == "blocking"
     s = summary["scan"][0]
     assert s["key"] == "S1" and s["verdict"] is None and s["tool"] == "example-sast"
+
+
+def test_scanners_without_dependency_report(tmp_path):
+    one, two = tmp_path / "one", tmp_path / "two"
+    one.mkdir()
+    two.mkdir()
+    _, summary = run(tmp_path, make_repo(one), "--sarif", sarif_file(tmp_path))
+    assert summary["scanners"] == [{"name": "example-sast", "version": "1.0", "kind": "code"}]
+    _, summary = run(tmp_path, make_repo(two))
+    assert summary["scanners"] == []
 
 
 def test_accepted_findings_pass_and_are_suppressed(tmp_path, capsys):

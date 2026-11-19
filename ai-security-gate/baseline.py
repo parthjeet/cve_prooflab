@@ -30,11 +30,12 @@ def sup_info(s):
 def load_reports(config, scanner_report, sarif_reports):
     """Return (dependency findings, code findings, tools) at the config's threshold."""
     deps = scanner.load(scanner_report, config.triage_min_severity) if scanner_report else []
-    code, tools = [], []
+    code = []
+    tools = [{**scanner.dep_tool(scanner_report), "kind": "dependency"}] if scanner_report else []
     for path in sarif_reports:
         found, run_tools = scanner.load_sarif(path, config.triage_min_severity)
         code += found
-        tools += run_tools
+        tools += [{**t, "kind": "code"} for t in run_tools]
     return deps, code, tools
 
 

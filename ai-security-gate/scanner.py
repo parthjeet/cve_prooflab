@@ -77,6 +77,14 @@ def load(path, min_severity):
     return kept
 
 
+def dep_tool(path):
+    """Name and version of the tool that wrote the dependency report."""
+    report = read_json(path, "scanner report")
+    trivy = report.get("Trivy") if isinstance(report, dict) else None
+    version = trivy.get("Version") if isinstance(trivy, dict) else None
+    return {"name": "Trivy", "version": version if isinstance(version, str) else ""}
+
+
 def check_limits(deps_open, code_open):
     if len(deps_open) > MAX_TRIAGE:
         raise ScannerError("limit reached: triage findings")

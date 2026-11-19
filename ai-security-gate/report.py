@@ -130,26 +130,41 @@ def _conf(entry):
     return "-" if value is None else enum(value, CONFIDENCES)
 
 
-def _parts(entry, kind, repo, head):
-    """The cells that the blocking, cleared, and accepted tables share.
+def _dep_finding(entry):
+    """Advisory link, the installed package, and the fixed version."""
+    ident = id_cell(entry.get("id"))
+    pkg = entry.get("package")
+    if not isinstance(pkg, str) or not pkg:
+        return ident
+    installed = entry.get("installed_version")
+    name = f"{pkg} {installed}" if isinstance(installed, str) and installed else pkg
+    fixed = entry.get("fixed_version")
+    tail = f"fixed in {code(fixed)}" if isinstance(fixed, str) and fixed \
+        else "no fixed version listed"
+    return f"{ident} in {code(name)}, {tail}"
+
+
+def _parts(entry, kind, repo, head, dep_name=None):
+    """The cells that the blocking and cleared tables share: what the tool flagged
+    (flagged, ident, severity, location), then what the AI says (verdict).
     kind is "change", "dep" (dependency finding), or "code" (code scan finding)."""
     if kind == "change":
-        return {"source": "Code change", "ident": id_cell(entry.get("cwe")), "package": "-",
+        return {"flagged": "AI review", "ident": id_cell(entry.get("cwe")),
                 "severity": enum(entry.get("severity"), SEVERITIES), "verdict": "-",
                 "location": location_cell(entry.get("file"), entry.get("line"), repo, head)}
     verdict = entry.get("verdict")
     if kind == "dep":
-        # The model's file and line only when it found the advisory reachable.
-        if verdict == "reachable" and entry.get("file"):
-            location = location_cell(entry.get("file"), entry.get("line"), repo, head)
+        if verdict is None:
+            shown = NOT_REVIEWED
         else:
-            location = location_cell(entry.get("target"), None, repo, head)
-        return {"source": "Dependency scan", "ident": id_cell(entry.get("id")),
-                "package": code(entry.get("package")) if entry.get("package") else "-",
-                "severity": _sev(entry), "location": location,
-                "verdict": NOT_REVIEWED if verdict is None else enum(verdict, TRIAGE_VERDICTS)}
-    return {"source": f"Code scan {code(entry.get('tool'))}",
-            "ident": id_cell(entry.get("rule_id")), "package": "-", "severity": _sev(entry),
+            shown = enum(verdict, TRIAGE_VERDICTS)
+            if verdict == "reachable" and entry.get("file"):
+                shown += " at " + location_cell(entry.get("file"), entry.get("line"), repo, head)
+        return {"flagged": code(dep_name) if dep_name is not None else "Dependency scan",
+                "ident": _dep_finding(entry), "severity": _sev(entry), "verdict": shown,
+                "location": location_cell(entry.get("target"), None, repo, head)}
+    return {"flagged": code(entry.get("tool")), "ident": id_cell(entry.get("rule_id")),
+            "severity": _sev(entry),
             "verdict": NOT_REVIEWED if verdict is None else enum(verdict, SCAN_VERDICTS),
             "location": location_cell(entry.get("file"), entry.get("line"), repo, head)}
 
@@ -167,16 +182,15 @@ def detail(entry, key, limit):
     return text(value, limit) if isinstance(value, str) and value.strip() else None
 
 
-def _blocking_row(n, entry, kind, repo, head):
-    p = _parts(entry, kind, repo, head)
-    return [str(n), p["source"], p["severity"], p["ident"], p["package"], p["verdict"],
-            _conf(entry), p["location"]]
+def _blocking_row(n, entry, kind, repo, head, dep_name=None):
+    p = _parts(entry, kind, repo, head, dep_name)
+    return [str(n), p["flagged"], p["ident"], p["severity"], p["location"], p["verdict"],
+            _conf(entry)]
 
 
-def _cleared_row(entry, kind, repo, head):
-    p = _parts(entry, kind, repo, head)
-    return [p["source"], p["ident"], p["package"], p["severity"], p["verdict"], _conf(entry),
-            p["location"]]
+def _cleared_row(entry, kind, repo, head, dep_name=None):
+    p = _parts(entry, kind, repo, head, dep_name)
+    return [p["flagged"], p["ident"], p["severity"], p["location"], p["verdict"], _conf(entry)]
 
 
 def _block(n, entry, kind):
@@ -196,16 +210,56 @@ def _block(n, entry, kind):
         out = [f"**{n}. {code(entry.get('rule_id'))} at {code(where)}**", ""]
         fix = CODE_FIX_LINE
     reason = detail(entry, "reason", DETAIL)
-    if reason:
-        out.append(f"- Analysis: {reason}")
-    out.append(f"- Recommended fix: {fix}")
+    out.append(f"- AI analysis: {reason}" if reason else f"- Recommended fix: {fix}")
     return out + [""]
 
 
-def _suppressed_row(entry, kind, repo, head):
+def _sup_key(entry):
+    """The (path, id, cwe, reason, expires) of an entry's suppression; None for a
+    missing or non-string value."""
     sup = entry.get("suppression") if isinstance(entry.get("suppression"), dict) else {}
-    p = _parts(entry, kind, repo, head)
-    return [p["ident"], p["location"], text(sup.get("reason")), code(sup.get("expires"))]
+    return tuple(v if isinstance(v := sup.get(k), str) else None
+                 for k in ("path", "id", "cwe", "reason", "expires"))
+
+
+def _accepted_row(key, count):
+    path, ident, cwe, reason, expires = key
+    cell = ", ".join(
+        ([f"path {code(path)}"] if path else []) + ([f"ID {id_cell(ident)}"] if ident else [])
+        + ([f"CWE {id_cell(cwe)}"] if cwe else [])) or "-"
+    return [cell, text(reason), code(expires), str(count)]
+
+
+def _scanner_rows(scanners, deps, codes, reviewed):
+    """One row per scanner: findings, accepted, cleared by the AI, blocking."""
+    def row(label, entries, cleared_rulings):
+        ruled = [e.get("ruling") for e in entries]
+        cleared = str(sum(r in cleared_rulings for r in ruled)) if reviewed else NOT_REVIEWED
+        return [label, str(len(entries)), str(ruled.count("suppressed")), cleared,
+                str(ruled.count("blocking"))]
+
+    def label(s):
+        return code(f"{s.get('name') or ''} {s.get('version') or ''}".strip())
+
+    def tool(value):
+        return value if isinstance(value, str) else ""
+
+    rows = []
+    dep_scanners = [s for s in scanners if s.get("kind") == "dependency"]
+    if dep_scanners or deps:
+        name = "Dependency scan" + (f" {label(dep_scanners[0])}" if dep_scanners else "")
+        rows.append(row(name, deps, ("cleared", "note")))
+    versions = {}
+    for s in scanners:
+        if s.get("kind") in (None, "code"):
+            versions.setdefault(tool(s.get("name")), s)
+    for e in codes:
+        versions.setdefault(tool(e.get("tool")), None)
+    for name, s in versions.items():
+        text_label = label(s) if s else code(name)
+        rows.append(row(f"Code scan {text_label}",
+                        [e for e in codes if tool(e.get("tool")) == name], ("cleared",)))
+    return rows
 
 
 def _known(data):
@@ -235,8 +289,8 @@ def refusing_model(summary):
 def refusal_line(model, category):
     where = f", category: {code(category)}" if category else ""
     return (f"**{code(model)} refused to run this security review** (stop reason: refusal"
-            f"{where}). The gate does not switch to another model. To get a review, approve a "
-            "different model's environment on this run, or re-run it.")
+            f"{where}). The gate does not switch to another model. To get a review from "
+            "another model, start a new run and write that model's ID in the approval comment.")
 
 
 def final_verdict(summary, baseline, review_result):
@@ -374,10 +428,17 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
                 f"{len(f_note)} notes.", ""]
     middle = f"{len(t_clr) + len(c_clr)} cleared by the AI review" if reviewed \
         else "none reviewed by the AI"
+    scanners = _dicts((ai or {}).get("scanners")) or _dicts((baseline or {}).get("scanners"))
+    dep_scanner = next((s for s in scanners if s.get("kind") == "dependency"), None)
+    dep_name = f"{dep_scanner.get('name') or ''}" if dep_scanner else None
     out += [f"Deterministic scan: {len(deps) + len(codes)} finding(s) of "
             f"{enum(limits.get('triage_min_severity'), SEVERITIES)} severity or higher; "
             f"{len(t_sup) + len(c_sup)} accepted by the owner, {middle}, "
             f"{len(t_block) + len(c_block)} blocking.", ""]
+    rows = _scanner_rows(scanners, deps, codes, reviewed)
+    if rows:
+        out += table(["Scanner", "Findings", "Accepted by owner", "Cleared by AI", "Blocking"],
+                     rows) + [""]
 
     warnings = []
     if meta.get("notice"):
@@ -397,9 +458,10 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
                + [(c, "code") for c in c_block])
     if entries:
         out += ["### Blocking findings", ""]
-        rows = [_blocking_row(i, e, k, repo, head) for i, (e, k) in enumerate(entries, 1)]
-        out += table(["#", "Source", "Severity", "CWE or ID", "Package", "AI verdict",
-                      "Confidence", "Location"], rows)
+        rows = [_blocking_row(i, e, k, repo, head, dep_name)
+                for i, (e, k) in enumerate(entries, 1)]
+        out += table(["#", "Flagged by", "Finding", "Severity", "Location", "AI verdict",
+                      "Confidence"], rows)
         out.append("")
         keys = {"change": ("title", "impact", "fix"), "dep": ("reason",), "code": ("reason",)}
         if any(detail(e, key, 1) for e, k in entries for key in keys[k]):
@@ -410,23 +472,26 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
                         "summary artifact.", ""]
 
     if f_sup or t_sup or c_sup:
-        out += ["### Accepted risks", ""]
-        rows = ([_suppressed_row(f, "change", repo, head) for f in f_sup]
-                + [_suppressed_row(t, "dep", repo, head) for t in t_sup]
-                + [_suppressed_row(c, "code", repo, head) for c in c_sup])
-        out += table(["CWE or ID", "Location", "Justification", "Expires"], rows)
-        out.append("")
+        groups = {}
+        for e in f_sup + t_sup + c_sup:
+            key = _sup_key(e)
+            groups[key] = groups.get(key, 0) + 1
+        out += [f"<details><summary>Accepted risks ({len(f_sup) + len(t_sup) + len(c_sup)} "
+                f"finding(s) under {len(groups)} suppression(s))</summary>", ""]
+        out += table(["Suppression", "Justification", "Expires", "Findings"],
+                     [_accepted_row(k, n) for k, n in groups.items()])
+        out += ["", "The summary artifact of this run lists each accepted finding.", "",
+                "</details>", ""]
 
     cleared = [(t, "dep") for t in t_clr] + [(c, "code") for c in c_clr]
     if cleared:
         out += [f"<details><summary>Cleared by AI review ({len(cleared)})</summary>", ""]
-        rows = [_cleared_row(e, k, repo, head) for e, k in cleared]
-        headers = ["Source", "CWE or ID", "Package", "Severity", "AI verdict", "Confidence",
-                   "Location"]
+        rows = [_cleared_row(e, k, repo, head, dep_name) for e, k in cleared]
+        headers = ["Flagged by", "Finding", "Severity", "Location", "AI verdict", "Confidence"]
         if details:
             rows = [row + [detail(e, "reason", LONG) or "-"]
                     for row, (e, _) in zip(rows, cleared)]
-            headers.append("Analysis")
+            headers.append("AI analysis")
         out += table(headers, rows)
         out += ["", "</details>", ""]
 
@@ -462,10 +527,6 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
                 f"- Effort: {enum(limits.get('effort'), ('low', 'medium', 'high', 'xhigh', 'max'))}"]
         run += [f"- {code(key)}: {num(totals[key])}"
                 for key in sorted(k for k in totals if isinstance(k, str))]
-    scanners = _dicts((ai or {}).get("scanners")) or _dicts((baseline or {}).get("scanners"))
-    if scanners:
-        run.append("- Scanners: " + ", ".join(
-            code(f"{s.get('name') or ''} {s.get('version') or ''}".strip()) for s in scanners))
     if run:
         out += ["<details><summary>Run details</summary>", ""] + run + ["", "</details>", ""]
 

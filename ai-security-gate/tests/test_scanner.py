@@ -409,3 +409,15 @@ def test_sarif_threshold_filter(tmp_path):
     assert [f["rule_id"] for f in sload(tmp_path, data, "medium")[0]] == ["w", "e"]
     assert [f["rule_id"] for f in sload(tmp_path, data, "high")[0]] == ["e"]
     assert sload(tmp_path, data, "critical")[0] == []
+
+
+@pytest.mark.parametrize("data,version", [
+    ({"Trivy": {"Version": "0.76.2"}}, "0.76.2"),
+    ({}, ""),
+    ({"Trivy": "0.76.2"}, ""),
+    ({"Trivy": {"Version": 5}}, ""),
+    ({"Trivy": {}}, ""),
+])
+def test_dep_tool(tmp_path, data, version):
+    assert scanner.dep_tool(write(tmp_path, {"SchemaVersion": 2, **data})) == {
+        "name": "Trivy", "version": version}
