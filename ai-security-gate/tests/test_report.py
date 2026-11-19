@@ -260,11 +260,11 @@ def test_hostile_detail_strings():
     # each field is cut at its limit, counted with the 45-character prefix of `evil`
     pre = len(evil)
     zs = {len(m) for m in re.findall(r"Z+", out)}
-    assert zs == {200 - pre, 500 - pre, 300 - pre}
+    assert zs == {197 - pre, 497 - pre, 297 - pre}
     title = [ln for ln in out.splitlines() if ln.startswith("**1. ")][0]
-    assert title.count("Z") == 200 - pre
+    assert title.count("Z") == 197 - pre
     impact = [ln for ln in out.splitlines() if ln.startswith("- Impact: ")][0]
-    assert impact.count("Z") == 500 - pre
+    assert impact.count("Z") == 497 - pre
 
 
 def test_non_string_detail_fields_are_skipped():
@@ -944,3 +944,50 @@ def test_hostile_dependency_fields():
     for m in re.findall(r"<code>(.*?)</code>", out):
         assert m.count("Z") <= 200
     assert all(ln.endswith("|") for ln in out.splitlines() if ln.startswith("|"))
+
+
+F1_LINE = ("The review job of this attempt failed. This result comes from an earlier attempt "
+           "of the same run.")
+F2_LINE = "A scanner finding stays blocking unless the AI review clears it with high confidence."
+
+
+def test_stale_attempt_line():
+    out = report.render(base_summary(), review_result="failure")
+    assert F1_LINE in out
+    assert out.index("No finding blocks this change.") < out.index(F1_LINE) \
+        < out.index("Change findings")
+    for verdict, result in (("BLOCK", "failure"), ("ERROR", "failure"), ("PASS", "success"),
+                            ("PASS", None), ("PASS", "skipped")):
+        s = base_summary(verdict=verdict, error="x" if verdict == "ERROR" else None,
+                         findings=[change()] if verdict == "BLOCK" else [])
+        assert F1_LINE not in report.render(s, review_result=result), (verdict, result)
+    out = report.render(None, baseline=load(BASELINE_PASS), review_result="skipped")
+    assert F1_LINE not in out
+
+
+def test_clear_rule_sentence():
+    for entry in (dep(verdict="not_reachable", confidence="medium"),
+                  code_entry(verdict="false_positive", confidence="medium")):
+        key = "triage" if "package" in entry else "scan"
+        out = report.render(detailed(**{key: [with_text(entry, reason="why")]}), "o/r")
+        assert out.count(F2_LINE) == 1
+        assert out.index("| 1 |") < out.index(F2_LINE) < out.index("**1. ")
+    s = detailed(triage=[dep(verdict="reachable")],
+                 scan=[code_entry(verdict="true_positive"), code_entry(verdict="unknown")],
+                 findings=[change()])
+    assert F2_LINE not in report.render(s, "o/r")
+    out = report.render(None, "o/r", baseline=load(BASELINE_BLOCK), review_result="skipped")
+    assert "### Blocking findings" in out and F2_LINE not in out
+
+
+def test_cut_values_end_with_dots():
+    out = report.render(detailed(triage=[with_text(scan(), reason="Q" * 600)]), "o/r")
+    line = [ln for ln in out.splitlines() if ln.startswith("- AI analysis: ")][0]
+    assert line == "- AI analysis: " + "Q" * 497 + "..."
+    out = report.render(detailed(triage=[with_text(scan(), reason="Q" * 500)]), "o/r")
+    assert "- AI analysis: " + "Q" * 500 + "\n" in out and "Q" * 500 + "..." not in out
+    # the cut comes before escaping, so an escaped character is never split
+    out = report.render(detailed(triage=[with_text(scan(), reason="Q" * 496 + ":::::")]), "o/r")
+    line = [ln for ln in out.splitlines() if ln.startswith("- AI analysis: ")][0]
+    assert line == "- AI analysis: " + "Q" * 496 + "&#58;..."
+    assert report._clean("abc", 3) == "abc" and report._clean("abcd", 3) == "..."

@@ -51,7 +51,8 @@ def _clean(value, limit, at=False):
     value = str(value)
     value = "".join(" " if (c.isspace() or unicodedata.category(c).startswith("C")) else c
                     for c in value)
-    value = value[:limit]
+    if len(value) > limit:
+        value = value[:limit - 3] + "..."
     if at:
         value = value.replace("@", "(at)")
     return "".join(c if c in SAFE else f"&#{ord(c)};" for c in value)
@@ -391,6 +392,9 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
                    "blocked until a review completes.")
     elif verdict == "PASS":
         out.append("No finding blocks this change.")
+        if review_result == "failure":
+            out += ["", "The review job of this attempt failed. This result comes from an "
+                    "earlier attempt of the same run."]
     elif verdict == "BLOCK":
         out.append(blocking_sentence)
     elif picked_refusal:
@@ -463,6 +467,10 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
         out += table(["#", "Flagged by", "Finding", "Severity", "Location", "AI verdict",
                       "Confidence"], rows)
         out.append("")
+        if any(k != "change" and e.get("verdict") in ("not_reachable", "false_positive")
+               for e, k in entries):
+            out += ["A scanner finding stays blocking unless the AI review clears it with high "
+                    "confidence.", ""]
         keys = {"change": ("title", "impact", "fix"), "dep": ("reason",), "code": ("reason",)}
         if any(detail(e, key, 1) for e, k in entries for key in keys[k]):
             for i, (e, k) in enumerate(entries[:MAX_BLOCKS], 1):
