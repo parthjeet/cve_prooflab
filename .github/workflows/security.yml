@@ -451,8 +451,51 @@ jobs:
           if-no-files-found: ignore
           retention-days: 90
 
+  scan-report:
+    needs: scan
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Download baseline summary
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: scanner-reports
+          path: ${{ runner.temp }}/scanner-reports
+
+      - name: Render report
+        id: render
+        env:
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 ai-security-gate/report.py \
+            --part scan \
+            --baseline "$RUNNER_TEMP/scanner-reports/security-baseline-summary.json" \
+            --repo "$REPO" \
+            --run-url "$RUN_URL" > "$RUNNER_TEMP/scan-report.md"
+          cat "$RUNNER_TEMP/scan-report.md" >> "$GITHUB_STEP_SUMMARY"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Post comment
+        if: ${{ steps.render.outputs.ready == 'true' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: scripts/ci/sticky_comment.sh "$RUNNER_TEMP/scan-report.md"
+
   report:
-    needs: [scan, review]
+    needs: [scan, scan-report, review]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -491,6 +534,7 @@ jobs:
             summary_args+=(--summary "$file")
           done < <(find "$RUNNER_TEMP/summary" -name ai-security-gate-summary.json -print0 | sort -z)
           python3 ai-security-gate/report.py \
+            --part review \
             "${summary_args[@]}" \
             --baseline "$RUNNER_TEMP/scanner-reports/security-baseline-summary.json" \
             --review-result "$REVIEW_RESULT" \

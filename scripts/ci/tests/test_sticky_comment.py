@@ -80,6 +80,35 @@ def test_bot_marker_comment_patches(env):
     assert "--method PATCH" in m[0] and "repos/o/r/issues/comments/42" in m[0]
 
 
+MARKER_A = "<!-- security-scan-report -->"
+MARKER_B = "<!-- ai-security-gate-report -->"
+
+
+def _bot(id_, marker):
+    return {"id": id_, "user": {"login": "github-actions[bot]"}, "body": marker + "\nold"}
+
+
+@pytest.mark.parametrize("marker,expected", [(MARKER_A, "issues/comments/11"), (MARKER_B, "issues/comments/22")])
+def test_two_markers_patch_own_comment(env, marker, expected):
+    env[2].write_text(json.dumps([_bot(11, MARKER_A), _bot(22, MARKER_B)]))
+    env[3].write_text(marker + "\nnew\n")
+    r = run(env, env[3])
+    assert r.returncode == 0, r.stderr
+    m = mutating(env[1])
+    assert len(m) == 1
+    assert "--method PATCH" in m[0] and expected in m[0]
+
+
+def test_other_marker_only_posts(env):
+    env[2].write_text(json.dumps([_bot(11, MARKER_A)]))
+    env[3].write_text(MARKER_B + "\nnew\n")
+    r = run(env, env[3])
+    assert r.returncode == 0, r.stderr
+    m = mutating(env[1])
+    assert len(m) == 1
+    assert "--method POST" in m[0] and "repos/o/r/issues/7/comments" in m[0]
+
+
 def test_other_author_marker_comment_posts(env):
     env[2].write_text(
         json.dumps([{"id": 5, "user": {"login": "mallory"}, "body": MARKER + "\nfake"}])
