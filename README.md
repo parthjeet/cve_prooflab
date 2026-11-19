@@ -87,7 +87,7 @@ The script prints nothing and exits 0. `reports/report.md` starts with `RESULT: 
 
 ## CI
 
-The workflow `.github/workflows/security-lab.yml` runs the commands above on a GitHub-hosted runner, on each push and each pull request: [runs on `master`](https://github.com/parthjeet/cve_prooflab/actions/workflows/security-lab.yml?query=branch%3Amaster). It installs Trivy 0.76.2 and uv 0.13.9 and checks each by sha256, builds both images, runs both gates, and writes the report. It pushes no image and has read-only access to the repository.
+The workflow `.github/workflows/security.yml` runs on each pull request. Its `lab` job runs the commands above on a GitHub-hosted runner: [workflow runs](https://github.com/parthjeet/cve_prooflab/actions/workflows/security.yml). The job installs Trivy 0.76.2 and uv 0.13.9 and checks each by sha256, builds both images, runs both gates, and writes the report. It pushes no image and has read-only access to the repository.
 
 Each run page holds the artifact `cve-prooflab-reports`: `report.md`, the three Trivy JSON files, and the two JUnit XML files. GitHub keeps an artifact for 90 days and asks for a login to download it. The step "Show runner tools" prints the runner's Docker, `jq`, and Python versions.
 

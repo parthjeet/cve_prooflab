@@ -14,6 +14,9 @@ inputs:
   scanner-report:
     description: Path of a Trivy JSON report. Empty means no scanner report.
     default: ""
+  sarif-reports:
+    description: Paths of SARIF 2.1.0 reports, one path per line. Empty means none.
+    default: ""
   evidence-path:
     description: Where to write the evidence file.
     default: ai-security-gate-evidence.json
@@ -34,7 +37,7 @@ runs:
       shell: bash
       env:
         UV_VERSION: "0.13.9"
-        # sha256 of uv-x86_64-unknown-linux-gnu.tar.gz 0.13.9, checked the same way as in security-lab.yml.
+        # sha256 of uv-x86_64-unknown-linux-gnu.tar.gz 0.13.9, checked against the release's checksums file and with `gh release verify-asset` on 2026-11-18.
         UV_SHA256: "a7fbaff2b9a271d85c1bdb540941090fd1ce011797b4abeb48e4dcd39c2471d5"
       run: |
         mkdir -p "$RUNNER_TEMP/uv"
@@ -63,6 +66,7 @@ runs:
         IN_HEAD: ${{ inputs.head }}
         IN_CONFIG_PATH: ${{ inputs.config-path }}
         IN_SCANNER_REPORT: ${{ inputs.scanner-report }}
+        IN_SARIF_REPORTS: ${{ inputs.sarif-reports }}
         IN_EVIDENCE_PATH: ${{ inputs.evidence-path }}
         IN_SUMMARY_PATH: ${{ inputs.summary-path }}
         IN_PRINT_DETAILS: ${{ inputs.print-details }}
@@ -79,6 +83,11 @@ runs:
         if [ -n "$IN_SCANNER_REPORT" ]; then
           args+=(--scanner-report "$IN_SCANNER_REPORT")
         fi
+        while IFS= read -r sarif_path || [ -n "$sarif_path" ]; do
+          if [ -n "$sarif_path" ]; then
+            args+=(--sarif "$sarif_path")
+          fi
+        done <<< "$IN_SARIF_REPORTS"
         if [ "$IN_PRINT_DETAILS" = "true" ]; then
           args+=(--print-details)
         fi

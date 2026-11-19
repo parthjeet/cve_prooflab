@@ -33,7 +33,10 @@ TRIAGE_TYPES = {
     "id": str, "package": str, "verdict": str, "confidence": str,
     "file": str, "line": int, "reason": str,
 }
+SCAN_TYPES = {"key": str, "verdict": str, "confidence": str, "reason": str}
 VERDICTS = ("reachable", "not_reachable", "unknown")
+SCAN_VERDICTS = ("true_positive", "false_positive", "unknown")
+CLEAR_CONFIDENCE = "high"
 SUPPRESS_KEYS = {"path", "id", "cwe", "reason", "expires"}
 
 
@@ -82,8 +85,17 @@ class Verdict:
     notes: list
     expired: list
     triage_blocking: list
-    triage_suppressed: list
-    triage_notes: list
+    triage_cleared: list
+    scan_blocking: list
+    scan_cleared: list
+
+
+@dataclass(frozen=True)
+class Baseline:
+    deps_open: list
+    code_open: list
+    accepted: list  # (kind, finding, suppression); kind is "dependency" or "code"
+    expired: list
 
 
 # ---- answer validation ----
@@ -167,7 +179,26 @@ def check_triage_entry(i, t, head_root):
     return t
 
 
-def validate_answer(raw, head_root, triage_input=()):
+def check_scan_entry(i, e):
+    where = f"scan {i}"
+    if not isinstance(e, dict):
+        raise InvalidAnswer(f"{where} is not an object")
+    missing = SCAN_TYPES.keys() - e.keys()
+    extra = e.keys() - SCAN_TYPES.keys()
+    if missing:
+        raise InvalidAnswer(f"{where} is missing {sorted(missing)}")
+    if extra:
+        raise InvalidAnswer(f"{where} has extra keys {sorted(extra)}")
+    for key, typ in SCAN_TYPES.items():
+        if not isinstance(e[key], typ):
+            raise InvalidAnswer(f"{where}: {key} must be {typ.__name__}")
+    if e["verdict"] not in SCAN_VERDICTS:
+        raise InvalidAnswer(f"{where}: bad verdict {e['verdict']!r}")
+    if e["confidence"] not in CONFIDENCES:
+        raise InvalidAnswer(f"{where}: bad confidence {e['confidence']!r}")
+
+
+def validate_answer(raw, head_root, triage_input=(), scan_input=()):
     """Return the parsed answer dict or raise InvalidAnswer."""
     if isinstance(raw, (str, bytes)):
         try:
@@ -193,7 +224,14 @@ def validate_answer(raw, head_root, triage_input=()):
     got = sorted((t["id"], t["package"]) for t in checked)
     if got != want:
         raise InvalidAnswer("triage must hold each scanner finding (id, package) exactly once")
-    return {**answer, "triage": checked}
+    scan = answer.get("scan")
+    if not isinstance(scan, list):
+        raise InvalidAnswer("scan missing or not a list")
+    for i, e in enumerate(scan):
+        check_scan_entry(i, e)
+    if sorted(e["key"] for e in scan) != sorted(f["key"] for f in scan_input):
+        raise InvalidAnswer("scan must hold each code scanner finding key exactly once")
+    return {**answer, "triage": checked, "scan": scan}
 
 
 # ---- config ----
@@ -311,6 +349,36 @@ def matches(s, finding):
             and (s.cwe is None or s.cwe == finding["cwe"]))
 
 
+def baseline(deps, code, config, today):
+    """Apply live suppressions to scanner findings; key the open code findings S1, S2, ..."""
+    live = [s for s in config.suppressions if today <= s.expires]
+    expired = [s for s in config.suppressions if today > s.expires]
+
+    def accepting(file, id_):
+        return next((s for s in live
+                     if s.cwe is None
+                     and (s.path is None or fnmatch.fnmatchcase(file, s.path))
+                     and (s.id is None or s.id == id_)), None)
+
+    accepted, deps_open, code_open, seen = [], [], [], set()
+    for v in deps:
+        match = accepting(v["Target"], v["VulnerabilityID"])
+        if match:
+            accepted.append(("dependency", v, match))
+            continue
+        key = (v["VulnerabilityID"], v["PkgName"])
+        if key not in seen:
+            seen.add(key)
+            deps_open.append(v)
+    for f in code:
+        match = accepting(f["file"], f["rule_id"])
+        if match:
+            accepted.append(("code", f, match))
+        else:
+            code_open.append({"key": f"S{len(code_open) + 1}", **f})
+    return Baseline(deps_open, code_open, accepted, expired)
+
+
 def judge(answer, changed_files, config, today):
     """Pure decision: PASS (0) or BLOCK (1)."""
     live = [s for s in config.suppressions if today <= s.expires]
@@ -328,18 +396,13 @@ def judge(answer, changed_files, config, today):
             suppressed.append((f, match))
         else:
             blocking.append(f)
-    t_blocking, t_suppressed, t_notes = [], [], []
+    t_blocking, t_cleared, s_blocking, s_cleared = [], [], [], []
     for t in answer["triage"]:
-        if not (t["verdict"] == "reachable"
-                and CONFIDENCES.index(t["confidence"])
-                >= CONFIDENCES.index(config.min_confidence)):
-            t_notes.append(t)
-            continue
-        match = next((s for s in live if s.id == t["id"]), None)
-        if match:
-            t_suppressed.append((t, match))
-        else:
-            t_blocking.append(t)
-    code = 1 if blocking or t_blocking else 0
+        cleared = t["verdict"] == "not_reachable" and t["confidence"] == CLEAR_CONFIDENCE
+        (t_cleared if cleared else t_blocking).append(t)
+    for e in answer["scan"]:
+        cleared = e["verdict"] == "false_positive" and e["confidence"] == CLEAR_CONFIDENCE
+        (s_cleared if cleared else s_blocking).append(e)
+    code = 1 if blocking or t_blocking or s_blocking else 0
     return Verdict(code, "BLOCK" if code else "PASS", blocking, suppressed, notes, expired,
-                   t_blocking, t_suppressed, t_notes)
+                   t_blocking, t_cleared, s_blocking, s_cleared)

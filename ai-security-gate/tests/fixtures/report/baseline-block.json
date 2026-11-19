@@ -1,0 +1,24 @@
+{
+  "kind": "baseline",
+  "verdict": "BLOCK",
+  "error": null,
+  "base": "830e3b425107e8f9f797c876b41d94273d2f8758",
+  "head": "d55cf8d58f3af4939216e95aa0f6a56c01113d7d",
+  "notice": null,
+  "limits": {"triage_min_severity": "medium"},
+  "scanners": [{"name": "dep-scanner", "version": "1.2.3"}, {"name": "example-sast", "version": "1.0.0"}],
+  "triage": [
+    {"id": "CVE-2025-12345", "package": "pkgtool", "installed_version": "1.0.0", "fixed_version": "1.0.1",
+     "severity": "high", "target": "app/requirements.txt", "verdict": null, "confidence": null,
+     "file": "", "line": 0, "ruling": "blocking", "suppression": null},
+    {"id": "CVE-2025-33333", "package": "othertool", "installed_version": "2.0.0", "fixed_version": "2.0.1",
+     "severity": "high", "target": "tests/requirements.txt", "verdict": null, "confidence": null,
+     "file": "", "line": 0, "ruling": "suppressed",
+     "suppression": {"path": "tests/**", "id": null, "cwe": null, "reason": "Test inputs only.", "expires": "2027-05-18"}}
+  ],
+  "scan": [
+    {"key": "S1", "tool": "example-sast", "rule_id": "python.sql.formatted-query", "severity": "high",
+     "file": "app/db.py", "line": 12, "verdict": null, "confidence": null, "ruling": "blocking", "suppression": null}
+  ],
+  "expired_suppressions": []
+}

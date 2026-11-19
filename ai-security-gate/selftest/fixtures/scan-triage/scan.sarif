@@ -1,0 +1,53 @@
+{
+  "version": "2.1.0",
+  "runs": [
+    {
+      "tool": {
+        "driver": {
+          "name": "example-sast",
+          "version": "1.0.0"
+        }
+      },
+      "results": [
+        {
+          "ruleId": "python.sql.formatted-query",
+          "level": "error",
+          "message": {
+            "text": "A SQL query is built by string formatting. Use a parameterized query."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "db.py"
+                },
+                "region": {
+                  "startLine": 16
+                }
+              }
+            }
+          ]
+        },
+        {
+          "ruleId": "python.sql.formatted-query",
+          "level": "error",
+          "message": {
+            "text": "A SQL query is built by string formatting. Use a parameterized query."
+          },
+          "locations": [
+            {
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "db.py"
+                },
+                "region": {
+                  "startLine": 25
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

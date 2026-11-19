@@ -43,8 +43,19 @@ def finding(**kw):
     return f
 
 
-def answer(*findings, triage=()):
-    return {"summary": "s", "findings": list(findings), "triage": list(triage)}
+def answer(*findings, triage=(), scan=()):
+    return {"summary": "s", "findings": list(findings), "triage": list(triage),
+            "scan": list(scan)}
+
+
+def sc(**kw):
+    e = {"key": "S1", "verdict": "true_positive", "confidence": "high", "reason": "r"}
+    e.update(kw)
+    return e
+
+
+def code_in(*keys):
+    return [{"key": k} for k in keys]
 
 
 def tri(**kw):
@@ -54,8 +65,8 @@ def tri(**kw):
     return t
 
 
-def scan(id="CVE-1", package="pkg"):
-    return {"VulnerabilityID": id, "PkgName": package}
+def scan(id="CVE-1", package="pkg", target="req.txt"):
+    return {"VulnerabilityID": id, "PkgName": package, "Target": target}
 
 
 def id_sup(id="CVE-1", expires=date(2027, 1, 1)):
@@ -280,7 +291,7 @@ def test_valid_answer_returns_dict(root):
 
 
 def test_valid_zero_findings_passes(root):
-    a = gate.validate_answer('{"summary": "ok", "findings": [], "triage": []}', root)
+    a = gate.validate_answer('{"summary": "ok", "findings": [], "triage": [], "scan": []}', root)
     assert gate.judge(a, set(), cfg(), TODAY).label == "PASS"
 
 
@@ -300,10 +311,12 @@ BAD_ANSWERS = {
     "no summary": {"findings": []},
     "summary type": {"summary": 1, "findings": []},
     "no findings": {"summary": "s", "triage": []},
-    "no triage": {"summary": "s", "findings": []},
-    "triage type": {"summary": "s", "findings": [], "triage": {}},
-    "findings type": {"summary": "s", "findings": {}, "triage": []},
-    "finding not object": {"summary": "s", "findings": [1], "triage": []},
+    "no triage": {"summary": "s", "findings": [], "scan": []},
+    "no scan": {"summary": "s", "findings": [], "triage": []},
+    "scan type": {"summary": "s", "findings": [], "triage": [], "scan": {}},
+    "triage type": {"summary": "s", "findings": [], "triage": {}, "scan": []},
+    "findings type": {"summary": "s", "findings": {}, "triage": [], "scan": []},
+    "finding not object": {"summary": "s", "findings": [1], "triage": [], "scan": []},
     "missing key": without("fix"),
     "extra key": bad(extra="x"),
     "title type": bad(title=1),
@@ -344,7 +357,7 @@ def test_errors_share_base():
 # ---- triage: validate_answer ----
 
 def tri_answer(*entries):
-    return {"summary": "s", "findings": [], "triage": list(entries)}
+    return {"summary": "s", "findings": [], "triage": list(entries), "scan": []}
 
 
 def tri_without(key):
@@ -424,14 +437,37 @@ def test_non_reachable_file_and_line_are_cleared(root, verdict):
     assert sent["file"] == "/etc/passwd"  # input not mutated
 
 
-# ---- triage: judge ----
+# ---- triage and scan: judge ----
 
-@pytest.mark.parametrize("conf,blocks", [("high", True), ("medium", True), ("low", False)])
-def test_triage_reachable_confidence_threshold(conf, blocks):
-    v = gate.judge(answer(triage=[tri(confidence=conf)]), set(),
-                   cfg(min_confidence="medium"), TODAY)
-    assert (v.code == 1) == blocks
-    assert len(v.triage_blocking) == blocks and len(v.triage_notes) == (not blocks)
+@pytest.mark.parametrize("verdict", ["reachable", "not_reachable", "unknown"])
+@pytest.mark.parametrize("conf", ["low", "medium", "high"])
+def test_triage_clears_only_not_reachable_at_high(verdict, conf):
+    t = tri(verdict=verdict, confidence=conf)
+    v = gate.judge(answer(triage=[t]), set(), cfg(), TODAY)
+    cleared = verdict == "not_reachable" and conf == "high"
+    assert (v.triage_cleared == [t]) == cleared
+    assert (v.triage_blocking == [t]) == (not cleared)
+    assert v.code == (0 if cleared else 1)
+
+
+@pytest.mark.parametrize("verdict", ["true_positive", "false_positive", "unknown"])
+@pytest.mark.parametrize("conf", ["low", "medium", "high"])
+def test_scan_clears_only_false_positive_at_high(verdict, conf):
+    e = sc(verdict=verdict, confidence=conf)
+    v = gate.judge(answer(scan=[e]), set(), cfg(), TODAY)
+    cleared = verdict == "false_positive" and conf == "high"
+    assert (v.scan_cleared == [e]) == cleared
+    assert (v.scan_blocking == [e]) == (not cleared)
+    assert v.code == (0 if cleared else 1)
+
+
+def test_min_confidence_does_not_affect_scanner_entries():
+    for mc in gate.CONFIDENCES:
+        c = cfg(min_confidence=mc)
+        assert gate.judge(answer(scan=[sc(verdict="false_positive", confidence="medium")]),
+                          set(), c, TODAY).code == 1
+        assert gate.judge(answer(triage=[tri(verdict="not_reachable", confidence="high")]),
+                          set(), c, TODAY).code == 0
 
 
 def test_triage_reachable_blocks_when_file_not_changed():
@@ -440,32 +476,10 @@ def test_triage_reachable_blocks_when_file_not_changed():
     assert v.triage_blocking == [tri(file="elsewhere.py")]
 
 
-@pytest.mark.parametrize("verdict", ["not_reachable", "unknown"])
-def test_triage_other_verdicts_are_notes(verdict):
-    t = tri(verdict=verdict, file="", line=0)
-    v = gate.judge(answer(triage=[t]), set(), cfg(), TODAY)
-    assert v.code == 0 and v.triage_notes == [t] and not v.triage_blocking
-
-
-def test_triage_id_suppression_suppresses():
-    s = id_sup()
-    v = gate.judge(answer(triage=[tri()]), set(), cfg(suppressions=(s,)), TODAY)
-    assert v.code == 0 and v.triage_suppressed == [(tri(), s)]
-    assert not v.triage_blocking and not v.triage_notes
-
-
-def test_triage_id_suppression_is_exact_not_glob():
-    for pattern in ("CVE-*", "CVE-1 ", "cve-1"):
-        v = gate.judge(answer(triage=[tri()]), set(),
-                       cfg(suppressions=(id_sup(pattern),)), TODAY)
-        assert v.code == 1
-
-
-def test_triage_expired_id_suppression_does_not_suppress():
-    s = id_sup(expires=TODAY)
-    late = gate.judge(answer(triage=[tri()]), set(), cfg(suppressions=(s,)),
-                      TODAY + timedelta(days=1))
-    assert late.code == 1 and late.expired == [s] and not late.triage_suppressed
+def test_suppressions_play_no_part_in_judge_for_scanner_entries():
+    c = cfg(suppressions=(id_sup(), sup("app/*")))
+    v = gate.judge(answer(triage=[tri()], scan=[sc()]), {"app/a.py"}, c, TODAY)
+    assert v.code == 1 and len(v.triage_blocking) == 1 and len(v.scan_blocking) == 1
 
 
 def test_id_suppression_does_not_touch_change_finding():
@@ -473,20 +487,172 @@ def test_id_suppression_does_not_touch_change_finding():
     assert v.code == 1 and not v.suppressed
 
 
-def test_path_suppression_does_not_touch_triage_entry():
-    v = gate.judge(answer(triage=[tri()]), {"app/a.py"}, cfg(suppressions=(sup("app/*"),)), TODAY)
-    assert v.code == 1 and not v.triage_suppressed
-
-
-def test_not_reachable_with_matching_suppression_is_note():
-    t = tri(verdict="not_reachable", file="", line=0)
-    v = gate.judge(answer(triage=[t]), set(), cfg(suppressions=(id_sup(),)), TODAY)
-    assert v.triage_notes == [t] and not v.triage_suppressed
-
-
 def test_code_is_one_from_triage_alone():
     v = gate.judge(answer(finding(severity="low"), triage=[tri()]), {"app/a.py"}, cfg(), TODAY)
     assert v.blocking == [] and v.code == 1
+
+
+def test_code_is_one_from_scan_alone():
+    v = gate.judge(answer(scan=[sc()]), set(), cfg(), TODAY)
+    assert v.code == 1 and v.blocking == [] and not v.triage_blocking
+
+
+def test_expired_listed_in_verdict():
+    s = id_sup(expires=TODAY)
+    late = gate.judge(answer(), set(), cfg(suppressions=(s,)), TODAY + timedelta(days=1))
+    assert late.expired == [s]
+
+
+# ---- scan: validate_answer ----
+
+def scan_answer(*entries):
+    return {"summary": "s", "findings": [], "triage": [], "scan": list(entries)}
+
+
+def sc_without(key):
+    e = sc()
+    del e[key]
+    return e
+
+
+BAD_SCAN = {
+    "missing key field": sc_without("key"),
+    "missing reason": sc_without("reason"),
+    "extra field": sc(file="app/a.py"),
+    "key type": sc(key=1),
+    "reason type": sc(reason=1),
+    "bad verdict": sc(verdict="reachable"),
+    "bad confidence": sc(confidence="certain"),
+    "not an object": 1,
+}
+
+
+@pytest.mark.parametrize("entry", BAD_SCAN.values(), ids=BAD_SCAN.keys())
+def test_invalid_scan_entry(root, entry):
+    with pytest.raises(gate.InvalidAnswer):
+        gate.validate_answer(scan_answer(entry), root, (), code_in("S1"))
+
+
+def test_valid_scan_returns_answer(root):
+    a = scan_answer(sc(), sc(key="S2", verdict="false_positive"))
+    assert gate.validate_answer(a, root, (), code_in("S1", "S2")) == a
+
+
+@pytest.mark.parametrize("entries", [
+    [],
+    [sc(), sc()],
+    [sc(key="S9")],
+    [sc(), sc(key="S2")],
+    [sc(key="S2")],
+], ids=["key missing", "key twice", "unknown key", "extra key", "wrong key"])
+def test_scan_keys_must_match_input(root, entries):
+    with pytest.raises(gate.InvalidAnswer):
+        gate.validate_answer(scan_answer(*entries), root, (), code_in("S1"))
+
+
+def test_scan_entries_without_input_are_rejected(root):
+    with pytest.raises(gate.InvalidAnswer):
+        gate.validate_answer(scan_answer(sc()), root)
+
+
+def test_scan_key_missing_from_two(root):
+    with pytest.raises(gate.InvalidAnswer):
+        gate.validate_answer(scan_answer(sc()), root, (), code_in("S1", "S2"))
+
+
+# ---- baseline ----
+
+def dep(id="CVE-1", pkg="pkg", target="req.txt"):
+    return {"VulnerabilityID": id, "PkgName": pkg, "Target": target}
+
+
+def code(rule="r1", file="a.py", line=1, tool="t"):
+    return {"tool": tool, "tool_version": "1", "rule_id": rule, "severity": "high",
+            "file": file, "line": line, "message": "m"}
+
+
+def asup(path=None, id=None, cwe=None, expires=date(2027, 1, 1)):
+    return gate.Suppression(path, cwe, "r", expires, id)
+
+
+def base(deps, codes, *sups):
+    return gate.baseline(deps, codes, cfg(suppressions=tuple(sups)), TODAY)
+
+
+def test_baseline_no_suppressions_keeps_all_and_keys_code():
+    b = base([dep()], [code(line=1), code(line=2)])
+    assert b.deps_open == [dep()] and b.accepted == [] and b.expired == []
+    assert [c["key"] for c in b.code_open] == ["S1", "S2"]
+    assert b.code_open[0]["rule_id"] == "r1" and b.code_open[1]["line"] == 2
+
+
+def test_baseline_path_suppression_on_each_kind():
+    s = asup(path="req/*")
+    b = base([dep(target="req/a.txt"), dep(id="CVE-2")], [code(file="req/x.py"), code()], s)
+    assert [v["VulnerabilityID"] for v in b.deps_open] == ["CVE-2"]
+    assert [f["file"] for f in b.code_open] == ["a.py"]
+    assert [(k, x) for k, x, _ in b.accepted] == [("dependency", dep(target="req/a.txt")),
+                                                  ("code", code(file="req/x.py"))]
+    assert all(m is s for _, _, m in b.accepted)
+
+
+def test_baseline_id_suppression_on_each_kind():
+    s = asup(id="CVE-1")
+    b = base([dep(), dep(id="CVE-2")], [code(rule="CVE-1"), code(rule="other")], s)
+    assert [v["VulnerabilityID"] for v in b.deps_open] == ["CVE-2"]
+    assert [f["rule_id"] for f in b.code_open] == ["other"]
+    assert [k for k, _, _ in b.accepted] == ["dependency", "code"]
+
+
+def test_baseline_id_is_exact_not_glob():
+    b = base([dep()], [code(rule="CVE-1")], asup(id="CVE-*"))
+    assert len(b.deps_open) == 1 and len(b.code_open) == 1
+
+
+def test_baseline_path_with_id_needs_both():
+    s = asup(path="req.txt", id="CVE-1")
+    b = base([dep(), dep(target="other.txt"), dep(id="CVE-2")], [], s)
+    assert [(v["VulnerabilityID"], v["Target"]) for v in b.deps_open] == [
+        ("CVE-1", "other.txt"), ("CVE-2", "req.txt")]
+    assert len(b.accepted) == 1
+
+
+def test_baseline_cwe_suppression_accepts_no_scanner_finding():
+    s = asup(path="*", cwe="CWE-22")
+    b = base([dep()], [code()], s)
+    assert len(b.deps_open) == 1 and len(b.code_open) == 1 and b.accepted == []
+
+
+def test_baseline_expired_accepts_nothing():
+    s = asup(path="*", expires=TODAY - timedelta(days=1))
+    b = base([dep()], [code()], s)
+    assert len(b.deps_open) == 1 and len(b.code_open) == 1
+    assert b.accepted == [] and b.expired == [s]
+
+
+def test_baseline_suppression_live_on_expiry_day():
+    s = asup(path="*", expires=TODAY)
+    b = base([dep()], [], s)
+    assert b.deps_open == [] and b.expired == []
+
+
+def test_baseline_pair_accepted_under_one_target_open_under_another():
+    s = asup(path="fixtures/*")
+    b = base([dep(target="fixtures/r.txt"), dep(target="app/r.txt")], [], s)
+    assert [v["Target"] for v in b.deps_open] == ["app/r.txt"]
+    assert len(b.accepted) == 1
+
+
+def test_baseline_dedups_open_deps_by_id_and_package_after_suppression():
+    b = base([dep(target="a"), dep(target="b"), dep(pkg="other", target="a")], [])
+    assert [(v["PkgName"], v["Target"]) for v in b.deps_open] == [("pkg", "a"), ("other", "a")]
+
+
+def test_baseline_keys_only_on_open_code_findings():
+    s = asup(path="skip/*")
+    b = base([], [code(file="skip/a.py"), code(line=1), code(file="skip/b.py"), code(line=2)], s)
+    assert [(f["key"], f["line"]) for f in b.code_open] == [("S1", 1), ("S2", 2)]
+    assert all("key" not in f for _, f, _ in b.accepted)
 
 
 def test_matches_false_without_path():

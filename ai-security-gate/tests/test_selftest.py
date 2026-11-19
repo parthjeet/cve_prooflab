@@ -30,7 +30,7 @@ def expected_of(name):
     return json.loads((FIXTURES / name / "expected.json").read_text())
 
 
-def fake_expected(repo, base, head, scanner_report=None):
+def fake_expected(repo, base, head, scanner_report=None, sarif_reports=()):
     name = Path(repo).name
     for n in NAMES:
         if name.startswith(n + "-"):
@@ -40,11 +40,15 @@ def fake_expected(repo, base, head, scanner_report=None):
     triage = [{"id": i, "verdict": v,
                "ruling": "blocking" if v == "reachable" else "note"}
               for i, v in exp.get("triage", {}).items()]
-    return {"verdict": exp["verdict"], "blocking": blocking, "triage": triage}
+    scan = []
+    for key, want in exp.get("scan", {}).items():
+        file, _, line = key.rpartition(":")
+        scan.append({"file": file, "line": int(line), **want})
+    return {"verdict": exp["verdict"], "blocking": blocking, "triage": triage, "scan": scan}
 
 
 def test_fixture_names():
-    assert NAMES == ["injected-instruction", "sql-injection", "sql-injection-fixed",
+    assert NAMES == ["injected-instruction", "scan-triage", "sql-injection", "sql-injection-fixed",
                      "triage-not-reachable", "triage-reachable"]
 
 
@@ -124,10 +128,10 @@ def test_run_all_match(tmp_path, capsys):
 
 
 def test_run_exception_is_mismatch(tmp_path, capsys):
-    def fake(repo, base, head, report):
+    def fake(repo, base, head, report, sarif_reports=()):
         if Path(repo).name.startswith("sql-injection-fixed-"):
             raise RuntimeError("boom")
-        return fake_expected(repo, base, head, report)
+        return fake_expected(repo, base, head, report, sarif_reports)
 
     code = selftest.run(FIXTURES, fake, tmp_path)
     lines = capsys.readouterr().out.splitlines()
@@ -207,13 +211,13 @@ def test_triage_requirements_identical(name):
 
 
 def install_fake_review(monkeypatch, calls):
-    def fake(repo, base, head, scanner_report=None, **kwargs):
+    def fake(repo, base, head, scanner_report=None, sarif_reports=(), **kwargs):
         calls.append(kwargs)
         ev = kwargs.get("evidence_path")
         if ev:
             Path(ev).write_text(json.dumps({"totals": {
                 "total_input_tokens": 100, "output_tokens": 10, "requests": 2}}))
-        return fake_expected(repo, base, head, scanner_report)
+        return fake_expected(repo, base, head, scanner_report, sarif_reports)
 
     monkeypatch.setattr(review, "run_review", fake)
 
@@ -225,19 +229,19 @@ def test_main_evidence_dir_paths(tmp_path, monkeypatch, capsys):
     code = selftest.main(["--evidence-dir", str(out_dir)])
     lines = capsys.readouterr().out.splitlines()
     assert code == 0
-    assert len(calls) == 5
+    assert len(calls) == 6
     assert sorted(Path(c["evidence_path"]).name for c in calls) == \
         sorted(f"{n}-evidence.json" for n in NAMES)
     assert sorted(Path(c["summary_path"]).name for c in calls) == \
         sorted(f"{n}-summary.json" for n in NAMES)
     assert all(Path(c["evidence_path"]).parent == out_dir for c in calls)
-    assert lines[-1] == "self-test tokens: input=500 output=50 requests=10"
+    assert lines[-1] == "self-test tokens: input=600 output=60 requests=12"
 
 
 def test_main_token_line_missing_totals(tmp_path, monkeypatch, capsys):
-    def fake(repo, base, head, scanner_report=None, **kwargs):
+    def fake(repo, base, head, scanner_report=None, sarif_reports=(), **kwargs):
         Path(kwargs["evidence_path"]).write_text(json.dumps({"totals": None}))
-        return fake_expected(repo, base, head, scanner_report)
+        return fake_expected(repo, base, head, scanner_report, sarif_reports)
 
     monkeypatch.setattr(review, "run_review", fake)
     selftest.main(["--evidence-dir", str(tmp_path)])
@@ -251,5 +255,71 @@ def test_main_without_evidence_dir(monkeypatch, capsys):
     code = selftest.main([])
     out = capsys.readouterr().out
     assert code == 0
-    assert calls == [{}] * 5
+    assert calls == [{}] * 6
     assert "self-test tokens" not in out
+
+
+SCAN_DIR = FIXTURES / "scan-triage"
+
+
+def test_scan_triage_db_identical():
+    assert (SCAN_DIR / "base" / "db.py").read_bytes() == (SCAN_DIR / "head" / "db.py").read_bytes()
+
+
+def test_scan_triage_sarif_lines_hold_execute():
+    lines = (SCAN_DIR / "head" / "db.py").read_text().splitlines()
+    keys = expected_of("scan-triage")["scan"]
+    assert len(keys) == 2
+    for key in keys:
+        file, _, line = key.rpartition(":")
+        assert file == "db.py"
+        assert "execute(" in lines[int(line) - 1]
+
+
+def test_scan_triage_load_sarif():
+    found, tools = scanner.load_sarif(SCAN_DIR / "scan.sarif", "high")
+    assert len(found) == 2
+    assert tools == [{"name": "example-sast", "version": "1.0.0"}]
+    assert {f["rule_id"] for f in found} == {"python.sql.formatted-query"}
+    assert {f"{f['file']}:{f['line']}" for f in found} == set(expected_of("scan-triage")["scan"])
+
+
+def test_run_passes_sarif_reports(tmp_path):
+    seen = {}
+
+    def fake(repo, base, head, report, sarif_reports=()):
+        seen[Path(repo).name.rsplit("-", 1)[0]] = sarif_reports
+        return fake_expected(repo, base, head, report, sarif_reports)
+
+    assert selftest.run(FIXTURES, fake, tmp_path) == 0
+    assert seen["scan-triage"] == (str(SCAN_DIR / "scan.sarif"),)
+    assert seen["sql-injection"] == ()
+
+
+SCAN_EXP = {"verdict": "BLOCK", "require": [],
+            "scan": {"db.py:16": {"verdict": "true_positive", "ruling": "blocking"}}}
+
+
+def scan_result(verdict="true_positive", ruling="blocking", file="db.py", line=16):
+    return {"verdict": "BLOCK", "blocking": [],
+            "scan": [{"file": file, "line": line, "verdict": verdict, "ruling": ruling}]}
+
+
+def test_check_scan_match():
+    assert selftest.check(SCAN_EXP, scan_result())[0]
+
+
+def test_check_scan_wrong_verdict():
+    ok, reason = selftest.check(SCAN_EXP, scan_result(verdict="false_positive"))
+    assert not ok and "db.py:16" in reason
+
+
+def test_check_scan_wrong_ruling():
+    ok, reason = selftest.check(SCAN_EXP, scan_result(ruling="cleared"))
+    assert not ok and "db.py:16" in reason
+
+
+def test_check_scan_missing_entry():
+    ok, reason = selftest.check(SCAN_EXP, scan_result(line=99))
+    assert not ok and "db.py:16" in reason
+    assert not selftest.check(SCAN_EXP, {"verdict": "BLOCK", "blocking": []})[0]

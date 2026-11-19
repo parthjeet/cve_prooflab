@@ -1,0 +1,1 @@
+{"verdict": "BLOCK", "require": [], "scan": {"db.py:16": {"verdict": "true_positive", "ruling": "blocking"}, "db.py:25": {"verdict": "false_positive", "ruling": "cleared"}}}

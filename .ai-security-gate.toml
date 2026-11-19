@@ -13,3 +13,43 @@ max_input_tokens = 800000
 path = "ai-security-gate/selftest/fixtures/**"
 reason = "Test inputs for the gate's self-test. No build or runtime path loads these files."
 expires = 2027-05-18
+
+# Semgrep pins mcp==1.29.0 and opentelemetry-api~=1.37.0 in every release up
+# to 1.186.0, so these advisories cannot be fixed by an upgrade. Review them
+# when a Semgrep release raises those pins.
+
+[[suppress]]
+path = "requirements-scan.txt"
+id = "CVE-2026-116684"
+reason = "Dependency of the Semgrep CI scanner, pinned upstream by Semgrep. Installed only in the scan job's tool environment; not part of the application."
+expires = 2026-12-19
+
+[[suppress]]
+path = "requirements-scan.txt"
+id = "CVE-2026-116685"
+reason = "Dependency of the Semgrep CI scanner, pinned upstream by Semgrep. Installed only in the scan job's tool environment; not part of the application."
+expires = 2026-12-19
+
+[[suppress]]
+path = "requirements-scan.txt"
+id = "CVE-2026-116686"
+reason = "Dependency of the Semgrep CI scanner, pinned upstream by Semgrep. Installed only in the scan job's tool environment; not part of the application."
+expires = 2026-12-19
+
+[[suppress]]
+path = "requirements-scan.txt"
+id = "CVE-2026-59951"
+reason = "Dependency of the Semgrep CI scanner, pinned upstream by Semgrep. Installed only in the scan job's tool environment; not part of the application."
+expires = 2026-12-19
+
+[[suppress]]
+path = "requirements-scan.txt"
+id = "CVE-2026-114603"
+reason = "Dependency of the Semgrep CI scanner, pinned upstream by Semgrep. Installed only in the scan job's tool environment; not part of the application."
+expires = 2026-12-19
+
+[[suppress]]
+path = "requirements-scan.txt"
+id = "CVE-2026-126360"
+reason = "Dependency of the Semgrep CI scanner, pinned upstream by Semgrep. Installed only in the scan job's tool environment; not part of the application."
+expires = 2026-12-19

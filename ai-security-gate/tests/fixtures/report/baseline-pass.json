@@ -1,0 +1,13 @@
+{
+  "kind": "baseline",
+  "verdict": "PASS",
+  "error": null,
+  "base": "830e3b425107e8f9f797c876b41d94273d2f8758",
+  "head": "d55cf8d58f3af4939216e95aa0f6a56c01113d7d",
+  "notice": null,
+  "limits": {"triage_min_severity": "medium"},
+  "scanners": [{"name": "dep-scanner", "version": "1.2.3"}],
+  "triage": [],
+  "scan": [],
+  "expired_suppressions": []
+}

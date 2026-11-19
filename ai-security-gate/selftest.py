@@ -30,7 +30,7 @@ def build_repo(fixture_dir, work_dir):
     fixture_dir, work_dir = Path(fixture_dir), Path(work_dir)
     repo = Path(tempfile.mkdtemp(prefix=fixture_dir.name + "-", dir=work_dir))
     git(repo, "init", "-q")
-    shutil.copytree(fixture_dir / "base", repo, dirs_exist_ok=True)
+    shutil.copytree(fixture_dir / "base", repo, dirs_exist_ok=True, copy_function=shutil.copy)
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "base")
     base_sha = git(repo, "rev-parse", "HEAD")
@@ -42,7 +42,7 @@ def build_repo(fixture_dir, work_dir):
             shutil.rmtree(item)
         else:
             item.unlink()
-    shutil.copytree(fixture_dir / "head", repo, dirs_exist_ok=True)
+    shutil.copytree(fixture_dir / "head", repo, dirs_exist_ok=True, copy_function=shutil.copy)
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "head")
     head_sha = git(repo, "rev-parse", "HEAD")
@@ -71,6 +71,17 @@ def check(expected, result):
             return False, f"{vuln_id}: expected triage {want}, got {entry.get('verdict')}"
         if want == "reachable" and entry.get("ruling") != "blocking":
             return False, f"{vuln_id}: reachable but ruling is {entry.get('ruling')}, not blocking"
+    scan = result.get("scan") or []
+    for key, want in (expected.get("scan") or {}).items():
+        file, _, line = key.rpartition(":")
+        entries = [e for e in scan if e.get("file") == file and str(e.get("line")) == line]
+        if len(entries) != 1:
+            return False, f"{key}: expected one scan entry, got {len(entries)}"
+        entry = entries[0]
+        if entry.get("verdict") != want["verdict"]:
+            return False, f"{key}: expected scan {want['verdict']}, got {entry.get('verdict')}"
+        if entry.get("ruling") != want["ruling"]:
+            return False, f"{key}: expected ruling {want['ruling']}, got {entry.get('ruling')}"
     return True, "ok"
 
 
@@ -87,8 +98,10 @@ def run(fixtures_root, review_fn, work_dir):
             repo, base_sha, head_sha = build_repo(fixture, work_dir)
             report = fixture / "scanner-report.json"
             report = str(report) if report.exists() else None
+            sarif = fixture / "scan.sarif"
+            sarif_reports = (str(sarif),) if sarif.exists() else ()
             try:
-                result = review_fn(repo, base_sha, head_sha, report)
+                result = review_fn(repo, base_sha, head_sha, report, sarif_reports)
             except Exception as e:
                 result = {"verdict": "ERROR", "blocking": [], "error": repr(e)}
             ok, reason = check(expected, result)
@@ -129,9 +142,9 @@ def main(argv=None):
         evidence_dir = Path(args.evidence_dir)
         evidence_dir.mkdir(parents=True, exist_ok=True)
 
-        def review_fn(repo, base_sha, head_sha, scanner_report=None):
+        def review_fn(repo, base_sha, head_sha, scanner_report=None, sarif_reports=()):
             fixture = Path(repo).name.rsplit("-", 1)[0]
-            return run_review(repo, base_sha, head_sha, scanner_report,
+            return run_review(repo, base_sha, head_sha, scanner_report, sarif_reports,
                               evidence_path=evidence_dir / f"{fixture}-evidence.json",
                               summary_path=evidence_dir / f"{fixture}-summary.json")
 
