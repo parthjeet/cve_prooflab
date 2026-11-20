@@ -20,6 +20,7 @@ from pathlib import Path
 import agent
 import baseline
 import gate
+import proof
 import scanner
 import tools
 
@@ -219,6 +220,11 @@ def public_lines(state):
                    f"requests={t['requests']} tool_calls={t['tool_calls']}")
         for req in state["agent"]["requests"]:
             out.append(f"request id: {safe(req['request_id'])}")
+    if state["proof"]:
+        for e in state["proof"]["entries"]:
+            out.append(f"proof: {e['n']} {e['kind']} {safe(e['id'])} {e['outcome']}")
+        for req in state["proof"]["requests"]:
+            out.append(f"request id: {safe(req['request_id'])}")
     return out
 
 
@@ -265,6 +271,7 @@ def summary_of(state, details=False):
         "findings": [{k: r["finding"][k] for k in ("severity", "confidence", "cwe", "file", "line")
                       + (("title", "impact", "fix") if details else ())}
                      | {"ruling": r["ruling"], "suppression": r.get("suppression")}
+                     | ({"proof": r["proof"]} if "proof" in r else {})
                      for r in state["findings"]],
         "scanners": state["scanners"],
         "triage": [with_reason(t, details) for t in state["triage"]],
@@ -272,6 +279,7 @@ def summary_of(state, details=False):
         "expired_suppressions": state["expired"],
         "verdict": state["verdict"], "error": state["error"],
         "error_request_id": a.get("error_request_id"),
+        "proof": proof.public(state["proof"]) if state["proof"] else None,
     }
     if details:
         summary["details"] = True
@@ -280,7 +288,13 @@ def summary_of(state, details=False):
 
 def evidence_of(state):
     a = state.get("agent") or {}
+    private = state["proof"] and {
+        **proof.public(state["proof"]),
+        "entries": [{k: e[k] for k in ("n", "kind", "id", "outcome", "test_code", "meaning")}
+                    for e in state["proof"]["entries"]],
+        "error_request_id": state["proof"]["error_request_id"]}
     return {**summary_of(state),
+            "proof": private,
             "requests": a.get("requests", []),
             "raw_answer": a.get("answer_text"),
             "error_detail": state.get("error_detail"),
@@ -307,16 +321,39 @@ def jsonable_rulings(items):
     return out
 
 
+# ---- the proof stage ----
+
+def run_proof_stage(state, verdict, bl, repo, base_sha, head_sha, proof_dir, client, config,
+                    model):
+    """Request a proof test per selected finding. Raise GateError on a refusal or an error."""
+    chosen = proof.select(verdict, bl.deps_open, bl.code_open)
+    for c in chosen:
+        if c["kind"] == "dependency":
+            targets = [t for t in state["triage"] if (t["id"], t["package"]) ==
+                       (c["answer"]["id"], c["answer"]["package"]) and t["ruling"] == "blocking"]
+        elif c["kind"] == "code":
+            targets = [e for e in state["scan"] if e["key"] == c["answer"]["key"]]
+        else:
+            targets = [r for r in state["findings"]
+                       if r["ruling"] == "blocking" and r["finding"] is c["finding"]]
+        for target in targets:
+            target["proof"] = c["n"]
+    state["proof"], error = proof.run_stage(chosen, proof_dir, client,
+                                            tools.Toolbox(repo, base_sha, head_sha), config, model)
+    if error:
+        raise gate.GateError(error)
+
+
 # ---- the review ----
 
 def run_review(repo, base_sha, head_sha, scanner_report=None, sarif_reports=(), *, client=None,
                print_details=False, public_details=False, evidence_path=None, summary_path=None, today=None,
-               config_path=".ai-security-gate.toml", model=DEFAULT_MODEL):
+               config_path=".ai-security-gate.toml", model=DEFAULT_MODEL, proof_dir=None):
     today = today or date.today()
     state = {"model": model, "base": base_sha, "head": head_sha, "changed_files": [], "limits": {},
              "notice": None, "agent": None, "answer": None, "findings": [], "triage": [],
              "scan": [], "scanners": [], "expired": [], "verdict": "ERROR", "error": None,
-             "error_detail": None}
+             "error_detail": None, "proof": None}
     blocking, triage_result, scan_result = [], [], []
     try:
         if not isinstance(model, str) or not MODEL_RE.match(model):
@@ -360,6 +397,9 @@ def run_review(repo, base_sha, head_sha, scanner_report=None, sarif_reports=(), 
         accepted_triage, accepted_scan = baseline.accepted_entries(bl)
         state["triage"] = judged_triage + accepted_triage
         state["scan"] = judged_scan + accepted_scan
+        if proof_dir:
+            run_proof_stage(state, verdict, bl, repo, base_sha, head_sha, proof_dir, client,
+                            config, model)
         state["verdict"] = verdict.label
         blocking = [{"file": f["file"], "cwe": f["cwe"], "blocking": True}
                     for f in verdict.blocking]
@@ -379,6 +419,9 @@ def run_review(repo, base_sha, head_sha, scanner_report=None, sarif_reports=(), 
     lines = public_lines(state)
     if state["agent"] and state["agent"]["error_request_id"]:
         lines.append(f"request id of the failed call: {safe(state['agent']['error_request_id'])}")
+    if state["proof"] and state["proof"]["error_request_id"]:
+        lines.append(f"request id of the failed proof call: "
+                     f"{safe(state['proof']['error_request_id'])}")
     if state["error"]:
         lines.append(f"ERROR: {state['error']}")
     if print_details:
@@ -407,11 +450,13 @@ def main(argv=None):
     p.add_argument("--print-details", action="store_true")
     p.add_argument("--public-details", action="store_true")
     p.add_argument("--model", default=DEFAULT_MODEL)
+    p.add_argument("--proof-dir", default="")
     a = p.parse_args(argv)
     result = run_review(a.repo, a.base, a.head, a.scanner_report, a.sarif,
                         print_details=a.print_details, public_details=a.public_details,
                         evidence_path=a.evidence_path,
-                        summary_path=a.summary_path, config_path=a.config_path, model=a.model)
+                        summary_path=a.summary_path, config_path=a.config_path, model=a.model,
+                        proof_dir=a.proof_dir)
     return EXIT[result["verdict"]]
 
 

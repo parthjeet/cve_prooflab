@@ -197,3 +197,24 @@ def test_other_status_error_has_type_and_request_id(box):
 def test_connection_error(box):
     r = run(FakeApi(httpx2.ConnectError("down")), box)
     assert r.error == "API error connection"
+
+
+def test_no_tools_and_no_schema_request_shape(box):
+    api = FakeApi(message([text("x")]))
+    r = agent.run_agent(make_client(api), system="sys", first_message="first", toolbox=box,
+                        config=gate.Config(), model=MODEL, answer_schema=None, use_tools=False)
+    body = api.requests[0]
+    assert r.error is None and r.answer_text == "x"
+    assert set(body) == {"model", "max_tokens", "system", "messages", "output_config"}
+    assert body["output_config"] == {"effort": "medium"}
+
+
+def test_tools_without_schema_and_schema_without_tools(box):
+    api = FakeApi(message([text("x")]))
+    agent.run_agent(make_client(api), system="s", first_message="f", toolbox=box,
+                    config=gate.Config(), model=MODEL, answer_schema=None)
+    assert "tools" in api.requests[0] and api.requests[0]["output_config"] == {"effort": "medium"}
+    api = FakeApi(message([text("x")]))
+    agent.run_agent(make_client(api), system="s", first_message="f", toolbox=box,
+                    config=gate.Config(), model=MODEL, answer_schema=SCHEMA, use_tools=False)
+    assert "tools" not in api.requests[0] and "format" in api.requests[0]["output_config"]

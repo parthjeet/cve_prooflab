@@ -63,12 +63,16 @@ def limit_hit(totals, config, started, clock):
 
 
 def run_agent(client, *, system, first_message, toolbox, config, model, answer_schema,
-              clock=time.monotonic):
+              use_tools=True, clock=time.monotonic):
     result = AgentResult(model_requested=model)
     started = clock()
     system_blocks = [{"type": "text", "text": system, "cache_control": CACHE}]
     tool_defs = [*tools.TOOL_DEFINITIONS]
     tool_defs[-1] = {**tool_defs[-1], "cache_control": CACHE}
+    output_config = {"effort": config.effort}
+    if answer_schema is not None:
+        output_config["format"] = {"type": "json_schema", "schema": answer_schema}
+    extra = {"tools": tool_defs} if use_tools else {}
     messages = [{"role": "user", "content": [
         {"type": "text", "text": first_message, "cache_control": CACHE}]}]
 
@@ -88,10 +92,9 @@ def run_agent(client, *, system, first_message, toolbox, config, model, answer_s
                 model=model,
                 max_tokens=config.max_tokens,
                 system=system_blocks,
-                tools=tool_defs,
                 messages=messages,
-                output_config={"effort": config.effort,
-                               "format": {"type": "json_schema", "schema": answer_schema}},
+                output_config=output_config,
+                **extra,
             )
         except anthropic.APIStatusError as e:
             if e.status_code in (401, 403, 404):
