@@ -1210,3 +1210,173 @@ def test_cut_values_end_with_dots():
     line = [ln for ln in out.splitlines() if ln.startswith("- AI analysis: ")][0]
     assert line == "- AI analysis: " + "Q" * 496 + "&#58;..."
     assert report._clean("abc", 3) == "abc" and report._clean("abcd", 3) == "..."
+
+
+PROOF_DIR = FIXTURES / "proof"
+MYTHOS_PROOF = PROOF_DIR / "mythos-block-summary.json"
+FABLE_PROOF = PROOF_DIR / "fable-refused-summary.json"
+PROOF_HEADER = BLOCKING_HEADER[:-1] + "| Proof |"
+PROOF_LINE_TAIL = ("A proof test passes only when it shows the flaw on the running app. A finding "
+                   "blocks with or without one. The test code is not published.")
+
+
+def proof_summary(entries, findings=None, triage=None, **kw):
+    return base_summary(verdict="BLOCK", findings=findings or [], triage=triage or [],
+                        proof={"stage": "completed", "entries": entries, "requests": [],
+                               "totals": {}}, **kw)
+
+
+def proof_cells(out):
+    rows = [ln for ln in out.splitlines() if ln.startswith("| ") and "Flagged" not in ln]
+    return [ln.strip("| ").split(" | ")[-1] for ln in rows]
+
+
+def test_proof_column_and_cell_values():
+    s = proof_summary(
+        [{"n": 1, "outcome": "written"}, {"n": 2, "outcome": "written"},
+         {"n": 3, "outcome": "written"}, {"n": 4, "outcome": "written"},
+         {"n": 5, "outcome": "invalid"}],
+        findings=[change(proof=1), change(proof=2), change(proof=3), change(proof=4),
+                  change(proof=5), change()])
+    results = {1: "confirmed", 2: "not_confirmed", 3: "error"}
+    out = report.render(s, "o/r", proof_results=results)
+    assert PROOF_HEADER in out
+    assert proof_cells(out) == ["confirmed", "not confirmed", "error", "not run",
+                                "no valid test", "-"]
+    line = (f"Proof tests: 4 written by <code>m-1</code> and run against the app in a container "
+            f"with no outside network: 1 confirmed, 1 not confirmed, 1 error. {PROOF_LINE_TAIL}")
+    assert line in out
+    assert out.index(line) < out.index(PROOF_HEADER)
+    assert out.index("### Blocking findings") < out.index(line)
+    # dependency and code rows carry the column too
+    s = proof_summary([{"n": 1, "outcome": "written"}], triage=[scan(proof=1)],
+                      scan=[code_entry()])
+    assert proof_cells(report.render(s, proof_results={1: "confirmed"})) == ["confirmed", "-"]
+
+
+def test_no_proof_renders_as_before():
+    plain = base_summary(verdict="BLOCK", findings=[change()])
+    out = report.render(plain)
+    assert BLOCKING_HEADER in out and "Proof" not in out
+    for proof in (None, {"stage": "completed", "entries": [], "requests": [], "totals": {}}):
+        assert report.render(dict(plain, proof=proof)) == out
+    # results alone, without proof entries, change nothing
+    assert report.render(plain, proof_results={1: "confirmed"}) == out
+
+
+def test_proof_results_filter():
+    hostile = {"results": [
+        {"n": 1, "outcome": "confirmed"}, {"n": "2", "outcome": "confirmed"},
+        {"n": True, "outcome": "confirmed"}, {"n": 3, "outcome": "<b>pwned</b>"},
+        {"n": 4, "outcome": "passed"}, {"n": 5, "outcome": ["confirmed"]},
+        {"n": 10 ** 40, "outcome": "confirmed"}, {"n": 6, "outcome": "[x](http://e.com)"},
+        {"n": 1, "outcome": "error"}, "junk", {"outcome": "confirmed"}, {"n": 7}]}
+    assert report.clean_results(hostile) == {1: "confirmed", 10 ** 40: "confirmed"}
+    assert report.clean_results({"results": "x"}) == {}
+    assert report.clean_results([1]) == {}
+    # a hostile value that slips through render() never reaches the comment
+    s = proof_summary([{"n": 3, "outcome": "written"}], findings=[change(proof=3)])
+    out = report.render(s, proof_results={3: "<b>pwned</b>", "x": "confirmed"})
+    assert "pwned" not in out and proof_cells(out) == ["not run"]
+
+
+def test_hostile_proof_entries():
+    s = proof_summary([{"n": 1, "outcome": "<img src=x>"}, {"n": "2", "outcome": "written"},
+                       {"n": 3, "outcome": "written"}, "junk"],
+                      findings=[change(proof=1), change(proof="2"), change(proof=3),
+                                change(proof=True), change(proof=99)])
+    out = report.render(s)
+    assert "<img" not in out
+    assert proof_cells(out) == ["-", "-", "not run", "-", "-"]
+    assert "Proof tests: 1 written by" in out
+
+
+def test_proof_results_cli_hostile_file(tmp_path):
+    summary = tmp_path / "s.json"
+    summary.write_text(json.dumps(proof_summary(
+        [{"n": 1, "outcome": "written"}, {"n": 2, "outcome": "written"}],
+        findings=[change(proof=1), change(proof=2)])))
+    res = tmp_path / report.PROOF_RESULTS_NAME
+    res.write_text(json.dumps({"results": [
+        {"n": 1, "outcome": "confirmed"}, {"n": 2, "outcome": "<script>x</script>"},
+        {"n": 10 ** 30, "outcome": "confirmed"}, {"n": "1", "outcome": "error"}]}))
+    r = run_cli("--summary", str(summary))
+    assert proof_cells(r.stdout) == ["confirmed", "not run"]
+    assert "<script" not in r.stdout and "1 confirmed, 0 not confirmed, 0 error" in r.stdout
+    for body in ("not json", "[1]"):
+        res.write_text(body)
+        r = run_cli("--summary", str(summary))
+        assert r.returncode == 0 and proof_cells(r.stdout) == ["not run", "not run"]
+        assert len(r.stderr.strip().splitlines()) == 1
+    res.unlink()
+    r = run_cli("--summary", str(summary))
+    assert r.stderr == "" and proof_cells(r.stdout) == ["not run", "not run"]
+
+
+def test_proof_refusal_line():
+    s = load(FABLE_PROOF)
+    out = report.render(s, reviews=[("claude-fable-5-2", "REFUSED")])
+    assert "## AI review: Review refused" in out
+    assert ("**<code>claude-fable-5-2</code> refused to write a proof test for this review** "
+            "(stop reason: refusal, category: <code>cyber</code>). The triage finished. The "
+            "model declined the request for a read-only test that confirms or refutes "
+            "<code>CVE-2026-48817</code> on the running app. The gate does not switch to "
+            "another model. To get a review from another model, start a new run and write "
+            "that model's ID in the approval comment.") in out
+    assert "refused to run this security review" not in out
+    assert "The gate fails closed, so this change is blocked until a review completes." in out
+    # the proof 1 entry may be a change finding or a code entry
+    s = load(FABLE_PROOF)
+    s["triage"], s["findings"] = [], [change(cwe="CWE-89", proof=1)]
+    assert "refutes <code>CWE-89</code> on the running app" in report.render(s)
+    # no proof 1 entry in the summary
+    s["findings"] = []
+    assert "refutes this finding on the running app" in report.render(s)
+    # no category on the last proof request
+    s["proof"]["requests"] = [{"request_id": "r", "stop_reason": "refusal", "stop_category": ""}]
+    assert "category" not in report.render(s)
+
+
+def test_review_refusal_keeps_its_line_even_with_proof_refused():
+    out = report.render(load(AI_REFUSAL))
+    assert "refused to run this security review" in out and "proof test" not in out
+    s = load(FABLE_PROOF)
+    s["requests"] = [{"request_id": "r", "stop_reason": "refusal", "stop_category": "cyber"}]
+    out = report.render(s)
+    assert "refused to run this security review" in out and "proof test" not in out
+    # a proof stage "refused" on a verdict that is not ERROR is no refusal
+    s = load(FABLE_PROOF)
+    s["verdict"] = "BLOCK"
+    assert report.refusal(s) is None
+
+
+def test_two_summaries_fable_refused_mythos_block(tmp_path):
+    out_file = tmp_path / "v.txt"
+    for order in ((FABLE_PROOF, MYTHOS_PROOF), (MYTHOS_PROOF, FABLE_PROOF)):
+        r = run_cli("--summary", str(order[0]), "--summary", str(order[1]),
+                    "--verdict-out", str(out_file), "--repo", "o/r")
+        assert r.returncode == 0, r.stderr
+        out = r.stdout
+        assert out_file.read_text().strip() == "BLOCK"
+        assert "## AI review: Blocked" in out
+        assert "<code>claude-fable-5-2</code> refused to write a proof test for this review" in out
+        assert ("Reviews in this run: <code>claude-fable-5-2</code> REFUSED, "
+                "<code>claude-mythos-5-2</code> BLOCK" in out
+                or "Reviews in this run: <code>claude-mythos-5-2</code> BLOCK, "
+                "<code>claude-fable-5-2</code> REFUSED" in out)
+        assert "Model: <code>claude-mythos-5-2</code>" in out
+        assert PROOF_HEADER in out
+        assert proof_cells(out) == ["confirmed", "confirmed", "not confirmed", "-",
+                                    "no valid test"]
+        assert "Proof tests: 3 written by <code>claude-mythos-5-2</code>" in out
+        assert "2 confirmed, 1 not confirmed, 0 error" in out
+        assert out.index("refused to write") < out.index("Reviews in this run")
+    # the comment holds no model-written proof text
+    assert "test_proof" not in out and "pytest" not in out
+
+
+def test_scan_comment_unchanged_by_proof():
+    baseline = load(BASELINE_BLOCK)
+    assert "Proof" not in report.render_scan(baseline)
+    s = load(MYTHOS_PROOF)
+    assert report.final_verdict(s, None, "success") == ("BLOCK", "ai")
