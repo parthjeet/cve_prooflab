@@ -328,16 +328,11 @@ def refusing_model(summary):
 def refusal_line(model, category, proof_ident=None):
     """proof_ident is None for a refusal of the review, else the ID or CWE of proof 1."""
     where = f", category: {code(category)}" if category else ""
-    closing = ("The gate does not switch to another model. To get a review from "
-               "another model, start a new run and write that model's ID in the approval "
-               "comment.")
     if proof_ident is None:
         return (f"**{code(model)} refused to run this security review** (stop reason: refusal"
-                f"{where}). {closing}")
-    what = code(proof_ident) if proof_ident else "this finding"
+                f"{where}).")
     return (f"**{code(model)} refused to write a proof test for this review** (stop reason: "
-            f"refusal{where}). The triage finished. The model declined the request for a "
-            f"read-only test that confirms or refutes {what} on the running app. {closing}")
+            f"refusal{where}).")
 
 
 def _refusal_of(summary):
@@ -426,8 +421,7 @@ def _accepted_fold(entries):
            f"finding(s) under {len(groups)} suppression(s))</summary>", ""]
     out += table(["Suppression", "Justification", "Expires", "Findings"],
                  [_accepted_row(k, n) for k, n in groups.items()])
-    return out + ["", "The summary artifact of this run lists each accepted finding.", "",
-                  "</details>", ""]
+    return out + ["", "</details>", ""]
 
 
 def _warnings(meta, model_warning=None):
@@ -489,13 +483,11 @@ def render_scan(baseline, repo=None, run_url=None):
         error = meta.get("error")
         what = (f"**The scan did not finish:** {text(error)}." if isinstance(error, str) and error
                 else "**The scan did not finish.**")
-        out.append(f"{what} The gate fails closed, so this change is blocked until a scan "
-                   "completes.")
-    elif n_open:
-        out.append("Each open finding blocks this change unless the AI review clears it or the "
-                   "repository owner accepts it.")
-    else:
+        out.append(what)
+    elif not n_open:
         out.append("No scanner finding is open.")
+    else:
+        out.pop()
     out.append("")
 
     parts = [f"{code(base[:7])}..{code(head[:7])}"] if base and head else []
@@ -503,9 +495,6 @@ def render_scan(baseline, repo=None, run_url=None):
         parts.append(f"[run]({run_url})")
     if parts:
         out += [" | ".join(parts), ""]
-    named = code(head[:7]) if head else "this commit"
-    out += ["The AI review posts its result in a separate comment when the review job ends. "
-            f"Until that comment names {named}, this change has not passed the gate.", ""]
 
     if done:
         out += [f"{len(deps) + len(codes)} finding(s) of "
@@ -528,8 +517,6 @@ def render_scan(baseline, repo=None, run_url=None):
             else:
                 out += ["### Open findings", ""] + shown + [""]
         out += _accepted_fold(accepted)
-        out.append("This comment holds scanner results only: the advisory or rule ID, severity, "
-                   "and location. It holds no AI-written text.")
     return _cut(out)
 
 
@@ -575,9 +562,7 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
         heading = "Review refused"
     if refusals is None:
         refusals = [_refusal_of(ai)] if picked_refusal else []
-    blocking_sentence = (f"**{n_block} blocking finding(s).** Resolve each one. To accept a risk "
-                         "instead, the repository owner adds a suppression with a reason and an "
-                         "expiry date to the gate's config file on the base branch.")
+    blocking_sentence = f"**{n_block} blocking finding(s).**"
     if mode == "baseline" and verdict in ("PASS", "BLOCK"):
         heading = "not run"
     out = [MARKER, "", f"## AI review: {heading}", ""]
@@ -590,8 +575,7 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
         if verdict == "ERROR":
             out.append("The AI review did not run for this change. This result comes from the "
                        "deterministic scanners alone.")
-            out += ["", f"**The scanner baseline did not finish:** {text(baseline.get('error'))}. "
-                    "The gate fails closed, so this change is blocked until a baseline completes."]
+            out += ["", f"**The scanner baseline did not finish:** {text(baseline.get('error'))}."]
         else:
             result_word = "passed" if verdict == "PASS" else "blocked"
             out.append("The AI review did not run for this change. The gate result comes from "
@@ -599,8 +583,7 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
             if verdict == "BLOCK":
                 out += ["", blocking_sentence]
     elif mode == "incomplete":
-        out.append("**The AI review did not finish.** The gate fails closed, so this change is "
-                   "blocked until a review completes.")
+        out.append("**The AI review did not finish.**")
     elif verdict == "PASS":
         out.append("No finding blocks this change.")
         if review_result == "failure":
@@ -609,12 +592,12 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
     elif verdict == "BLOCK":
         out.append(blocking_sentence)
     elif picked_refusal:
-        out.append("The gate fails closed, so this change is blocked until a review completes.")
         if ai.get("error_request_id"):
-            out += ["", f"Request ID of the failed call: {code(ai.get('error_request_id'))}"]
+            out.append(f"Request ID of the failed call: {code(ai.get('error_request_id'))}")
+        else:
+            out.pop()
     else:
-        out.append(f"**The review did not finish:** {text(ai.get('error'))}. "
-                   "The gate fails closed, so this change is blocked until a review completes.")
+        out.append(f"**The review did not finish:** {text(ai.get('error'))}.")
         if ai.get("error_request_id"):
             out += ["", f"Request ID of the failed call: {code(ai.get('error_request_id'))}"]
     out.append("")
@@ -672,18 +655,12 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
         if p_entries:
             out += [f"Proof tests: {num(p_written)} written by {code(requested)} and run against "
                     "the app in a container with no outside network: "
-                    f"{num(p_ok)} confirmed, {num(p_not)} not confirmed, {num(p_err)} error. "
-                    "A proof test passes only when it shows the flaw on the running app. A "
-                    "finding blocks with or without one. The test code is not published.", ""]
+                    f"{num(p_ok)} confirmed, {num(p_not)} not confirmed, {num(p_err)} error.", ""]
             headers.append("Proof")
             rows = [row + [_proof_cell(e, p_entries, results)]
                     for row, (e, _) in zip(rows, entries)]
         out += table(headers, rows)
         out.append("")
-        if any(k != "change" and e.get("verdict") in ("not_reachable", "false_positive")
-               for e, k in entries):
-            out += ["A scanner finding stays blocking unless the AI review clears it with high "
-                    "confidence.", ""]
         keys = {"change": ("title", "impact", "fix"), "dep": ("reason",), "code": ("reason",)}
         if any(detail(e, key, 1) for e, k in entries for key in keys[k]):
             for i, (e, k) in enumerate(entries[:MAX_BLOCKS], 1):
@@ -707,18 +684,6 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
         out += ["", "</details>", ""]
 
     out += [f"<details><summary>Non-blocking findings ({len(f_note)})</summary>", ""]
-    rule = ""
-    if ai:
-        rule = (f"A change finding blocks only when its severity is "
-                f"{enum(limits.get('fail_on'), SEVERITIES)} or higher, its confidence is "
-                f"{enum(limits.get('min_confidence'), CONFIDENCES)} or higher, "
-                "and its file is in the change. ")
-    out.append(
-        rule + "A scanner finding of "
-        f"{enum(limits.get('triage_min_severity'), SEVERITIES)} severity or higher blocks unless "
-        "the AI review clears it with high confidence (not_reachable for a dependency finding, "
-        "false_positive for a code finding) or the owner accepts it.")
-    out.append("")
     if f_note:
         rows = [_row(f, repo, head) for f in f_note]
         headers = ["Kind", "CWE or ID", "Package", "Verdict", "Severity", "Confidence",
@@ -740,13 +705,6 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
                 for key in sorted(k for k in totals if isinstance(k, str))]
     if run:
         out += ["<details><summary>Run details</summary>", ""] + run + ["", "</details>", ""]
-
-    if details:
-        out.append(f"Finding descriptions are AI-generated by {code(requested)}. "
-                   "Check each one against the code before you act on it.")
-    else:
-        out.append("This report shows severity, weakness class, and location. "
-                   "Finding descriptions are not published for this repository.")
 
     return _cut(out)
 
