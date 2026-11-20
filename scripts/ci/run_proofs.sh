@@ -81,11 +81,11 @@ for entry in ${tests[@]+"${tests[@]}"}; do
     --user 65534:65534 --pids-limit 128 --memory 512m --cpus 1 \
     -e PROOF_BASE_URL="http://127.0.0.1:${APP_PORT}" -e PYTHONDONTWRITEBYTECODE=1 \
     -v "$PROOF_DIR:/proofs:ro" "$RUNNER_IMAGE" \
-    python -m pytest "/proofs/$name" -q -p no:cacheprovider \
+    python /opt/proof_pytest.py "/proofs/$name" \
     >/dev/null 2>&1 || rc=$?
   case "$rc" in
-    0) record "$n" confirmed ;;
-    1) record "$n" not_confirmed ;;
+    10) record "$n" confirmed ;;
+    11) record "$n" not_confirmed ;;
     *)
       record "$n" error
       # A timed-out client leaves its container running. Remove it before the next test.

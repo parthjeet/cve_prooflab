@@ -6,4 +6,6 @@ RUN --mount=type=bind,target=/ctx \
     --mount=from=ghcr.io/astral-sh/uv:0.13.9@sha256:d3b601f0c7b118bc1753febf7c41cc80981df678445e0254284eecf84db79a7d,source=/uv,target=/bin/uv \
     uv pip install --system --no-cache --require-hashes -r /ctx/requirements-dev.txt
 
+COPY scripts/ci/proof_pytest.py /opt/proof_pytest.py
+
 USER 65534

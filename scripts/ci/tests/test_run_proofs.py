@@ -11,7 +11,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "run_proofs.sh"
 #   "run -d"          the app start; exits STUB_START_RC (default 0)
 #   "READY_URL"       the readiness check; exits 0
 #   "/proofs/test_proof_<n>.py"  a proof run; exits the code in $STUB_CODES/<n>
-#                     (default 0); sleeps STUB_SLEEP seconds first, if set
+#                     (default 10); sleeps STUB_SLEEP seconds first, if set
 #   "rm -f"           the cleanup; always exits 0
 STUB = """#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$STUB_LOG"
@@ -25,7 +25,7 @@ case "$*" in
     n="${n%%.py*}"
     [ "${STUB_SLEEP_FOR:-}" = "$n" ] && sleep "$STUB_SLEEP"
     if [ -f "$STUB_CODES/$n" ]; then exit "$(cat "$STUB_CODES/$n")"; fi
-    exit 0 ;;
+    exit 10 ;;
 esac
 exit 0
 """
@@ -80,7 +80,17 @@ def proof_calls(ctx):
 
 @pytest.mark.parametrize(
     "code,outcome",
-    [(0, "confirmed"), (1, "not_confirmed"), (2, "error"), (5, "error"), (124, "error"), (137, "error")],
+    [
+        (10, "confirmed"),
+        (11, "not_confirmed"),
+        (0, "error"),
+        (1, "error"),
+        (2, "error"),
+        (3, "error"),
+        (5, "error"),
+        (124, "error"),
+        (137, "error"),
+    ],
 )
 def test_exit_code_mapping(ctx, code, outcome):
     make(ctx[1], "test_proof_1.py")
@@ -119,7 +129,7 @@ def test_timeout_removes_test_container_before_next_test(ctx):
 
 def test_clean_exit_codes_do_not_remove_test_container(ctx):
     make(ctx[1], "test_proof_1.py")
-    (ctx[2] / "1").write_text("1")
+    (ctx[2] / "1").write_text("11")
     run(ctx)
     # Only the exit trap removes it.
     assert calls(ctx).count("rm -f proof_test_1") == 1
@@ -201,7 +211,7 @@ def test_locked_down_flags(ctx):
         "--cpus 1",
         "PROOF_BASE_URL=http://127.0.0.1:8000",
         ":/proofs:ro",
-        "runner:test python -m pytest /proofs/test_proof_1.py -q -p no:cacheprovider",
+        "runner:test python /opt/proof_pytest.py /proofs/test_proof_1.py",
     ):
         assert flag in test_call
 
