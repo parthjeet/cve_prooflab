@@ -342,13 +342,47 @@ jobs:
             ${{ runner.temp }}/scanner-reports/semgrep.sarif
           public-details: "true"
           model: ${{ steps.model.outputs.model }}
+          proof-dir: ${{ runner.temp }}/proofs
+
+      - name: Count proof tests
+        id: proofs
+        if: ${{ !cancelled() }}
+        run: |
+          count=0
+          if [ -d "$RUNNER_TEMP/proofs" ]; then
+            for f in "$RUNNER_TEMP"/proofs/*; do
+              name="${f##*/}"
+              if [[ "$name" =~ ^test_proof_[0-9]+\.py$ ]] && [ -f "$f" ]; then
+                count=$((count + 1))
+              fi
+            done
+          fi
+          echo "count=$count"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Build proof images
+        if: ${{ !cancelled() && steps.proofs.outputs.count != '0' }}
+        run: |
+          docker build -t cve_prooflab:proof app/
+          docker build -t proof-runner -f scripts/ci/proof-runner.Dockerfile .
+
+      - name: Run proof tests
+        if: ${{ !cancelled() && steps.proofs.outputs.count != '0' }}
+        env:
+          APP_IMAGE: cve_prooflab:proof
+          RUNNER_IMAGE: proof-runner
+          APP_PORT: "8000"
+          APP_READY_PATH: /status
+        run: scripts/ci/run_proofs.sh "$RUNNER_TEMP/proofs" ai-security-gate-proof-results.json
 
       - name: Upload summary
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ai-security-gate-summary-${{ steps.model.outputs.model }}
-          path: ai-security-gate-summary.json
+          path: |
+            ai-security-gate-summary.json
+            ai-security-gate-proof-results.json
           retention-days: 90
 
   selftest:

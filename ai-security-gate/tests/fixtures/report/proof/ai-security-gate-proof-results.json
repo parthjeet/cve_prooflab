@@ -1,0 +1,16 @@
+{
+ "results": [
+  {
+   "n": 1,
+   "outcome": "confirmed"
+  },
+  {
+   "n": 2,
+   "outcome": "confirmed"
+  },
+  {
+   "n": 3,
+   "outcome": "not_confirmed"
+  }
+ ]
+}

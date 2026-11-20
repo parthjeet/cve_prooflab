@@ -32,6 +32,9 @@ inputs:
   model:
     description: Model ID for the review. Empty means the gate's default.
     default: ""
+  proof-dir:
+    description: Directory for the proof tests the model writes. Empty means no proof stage.
+    default: ""
 
 runs:
   using: composite
@@ -75,6 +78,7 @@ runs:
         IN_PRINT_DETAILS: ${{ inputs.print-details }}
         IN_PUBLIC_DETAILS: ${{ inputs.public-details }}
         IN_MODEL: ${{ inputs.model }}
+        IN_PROOF_DIR: ${{ inputs.proof-dir }}
       run: |
         args=(
           --repo "$GITHUB_WORKSPACE"
@@ -100,5 +104,8 @@ runs:
         fi
         if [ -n "$IN_MODEL" ]; then
           args+=(--model "$IN_MODEL")
+        fi
+        if [ -n "$IN_PROOF_DIR" ]; then
+          args+=(--proof-dir "$IN_PROOF_DIR")
         fi
         "$RUNNER_TEMP/ai-gate-venv/bin/python" "$GITHUB_ACTION_PATH/review.py" "${args[@]}"

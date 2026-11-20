@@ -9,6 +9,7 @@ through code() or text() before it is printed.
 """
 import argparse
 import json
+import os
 import re
 import sys
 import unicodedata
@@ -23,6 +24,8 @@ SHORT = 200
 LONG = 300
 DETAIL = 500
 MAX_BLOCKS = 20
+PROOF_RESULTS_NAME = "ai-security-gate-proof-results.json"
+PROOF_RESULTS = {"confirmed": "confirmed", "not_confirmed": "not confirmed", "error": "error"}
 FIX_LINE = ("upgrade the package to a release that fixes this advisory, "
             "or remove the code path that reaches it.")
 
@@ -74,6 +77,10 @@ def enum(value, known):
 
 def num(value):
     return str(value) if type(value) is int else "-"
+
+
+def _int(value):
+    return type(value) is int
 
 
 def _dicts(value):
@@ -269,17 +276,47 @@ def _known(data):
     return value if isinstance(value, str) and value in VERDICTS else None
 
 
+def _category(request):
+    cat = request.get("stop_category")
+    return cat if isinstance(cat, str) and cat else None
+
+
+def _proof_refused(summary):
+    proof = summary.get("proof")
+    return isinstance(proof, dict) and proof.get("stage") == "refused"
+
+
 def refusal(summary):
     """(True, category or None) when the summary records a model refusal, else None.
-    Reads only verdict, final_stop_reason, and the last request's stop fields."""
+    Reads only verdict, final_stop_reason, the last request's stop fields, and, for a
+    refusal at the proof stage, the proof stage and its last request."""
     if not isinstance(summary, dict) or summary.get("verdict") != "ERROR":
         return None
     reqs = _dicts(summary.get("requests"))
     last = reqs[-1] if reqs else {}
     if summary.get("final_stop_reason") != "refusal" and last.get("stop_reason") != "refusal":
+        if not _proof_refused(summary):
+            return None
+        proof_reqs = _dicts(summary["proof"].get("requests"))
+        return True, _category(proof_reqs[-1] if proof_reqs else {})
+    return True, _category(last)
+
+
+def proof_refusal(summary):
+    """The first proof entry's ID or CWE (a string, or "" when unknown) when the refusal
+    is a refusal at the proof stage; None for a refusal of the review itself."""
+    if not refusal(summary):
         return None
-    cat = last.get("stop_category")
-    return True, (cat if isinstance(cat, str) and cat else None)
+    reqs = _dicts(summary.get("requests"))
+    last = reqs[-1] if reqs else {}
+    if summary.get("final_stop_reason") == "refusal" or last.get("stop_reason") == "refusal":
+        return None
+    for key, field in (("findings", "cwe"), ("triage", "id"), ("scan", "rule_id")):
+        for e in _dicts(summary.get(key)):
+            if _int(e.get("proof")) and e["proof"] == 1:
+                value = e.get(field)
+                return value if isinstance(value, str) else ""
+    return ""
 
 
 def refusing_model(summary):
@@ -288,11 +325,62 @@ def refusing_model(summary):
     return returned if isinstance(returned, str) and returned else summary.get("model_requested")
 
 
-def refusal_line(model, category):
+def refusal_line(model, category, proof_ident=None):
+    """proof_ident is None for a refusal of the review, else the ID or CWE of proof 1."""
     where = f", category: {code(category)}" if category else ""
-    return (f"**{code(model)} refused to run this security review** (stop reason: refusal"
-            f"{where}). The gate does not switch to another model. To get a review from "
-            "another model, start a new run and write that model's ID in the approval comment.")
+    closing = ("The gate does not switch to another model. To get a review from "
+               "another model, start a new run and write that model's ID in the approval "
+               "comment.")
+    if proof_ident is None:
+        return (f"**{code(model)} refused to run this security review** (stop reason: refusal"
+                f"{where}). {closing}")
+    what = code(proof_ident) if proof_ident else "this finding"
+    return (f"**{code(model)} refused to write a proof test for this review** (stop reason: "
+            f"refusal{where}). The triage finished. The model declined the request for a "
+            f"read-only test that confirms or refutes {what} on the running app. {closing}")
+
+
+def _refusal_of(summary):
+    """(model, category, proof_ident) of a summary that holds a refusal."""
+    return refusing_model(summary), refusal(summary)[1], proof_refusal(summary)
+
+
+def proof_cells(summary, results):
+    """({n: entry outcome}, written, confirmed, not confirmed, error) of the proof stage;
+    an empty dict when it holds no entry. results maps n to a run outcome."""
+    proof = summary.get("proof") if isinstance(summary, dict) else None
+    entries = {}
+    if isinstance(proof, dict):
+        for e in _dicts(proof.get("entries")):
+            if _int(e.get("n")) and isinstance(e.get("outcome"), str):
+                entries.setdefault(e["n"], e["outcome"])
+    written = [n for n, o in entries.items() if o == "written"]
+    got = [results.get(n) for n in written]
+    return (entries, len(written), got.count("confirmed"), got.count("not_confirmed"),
+            got.count("error"))
+
+
+def _proof_cell(entry, entries, results):
+    n = entry.get("proof")
+    if not _int(n) or n not in entries:
+        return "-"
+    outcome = entries[n]
+    if outcome == "invalid":
+        return "no valid test"
+    if outcome == "written":
+        return PROOF_RESULTS.get(results.get(n), "not run")
+    return "error" if outcome == "error" else "-"
+
+
+def clean_results(data):
+    """{n: outcome} from an untrusted proof results object. Only an integer n with the
+    outcome confirmed, not_confirmed, or error stays; the first entry for an n wins."""
+    out = {}
+    for e in _dicts(data.get("results") if isinstance(data, dict) else None):
+        n, outcome = e.get("n"), e.get("outcome")
+        if _int(n) and isinstance(outcome, str) and outcome in PROOF_RESULTS:
+            out.setdefault(n, outcome)
+    return out
 
 
 def final_verdict(summary, baseline, review_result):
@@ -446,7 +534,7 @@ def render_scan(baseline, repo=None, run_url=None):
 
 
 def render(summary, repo=None, run_url=None, baseline=None, review_result=None, reviews=None,
-           refusals=None):
+           refusals=None, proof_results=None):
     summary = summary if isinstance(summary, dict) else None
     baseline = baseline if isinstance(baseline, dict) else None
     repo = repo if isinstance(repo, str) and REPO_RE.match(repo) else None
@@ -486,7 +574,7 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
     if picked_refusal:
         heading = "Review refused"
     if refusals is None:
-        refusals = [(refusing_model(ai), refusal(ai)[1])] if picked_refusal else []
+        refusals = [_refusal_of(ai)] if picked_refusal else []
     blocking_sentence = (f"**{n_block} blocking finding(s).** Resolve each one. To accept a risk "
                          "instead, the repository owner adds a suppression with a reason and an "
                          "expiry date to the gate's config file on the base branch.")
@@ -495,8 +583,8 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
     out = [MARKER, "", f"## AI review: {heading}", ""]
     if picked_refusal:
         # The reader sees which model refused before anything else.
-        for model, category in refusals:
-            out += [refusal_line(model, category), ""]
+        for model, category, *proof in refusals:
+            out += [refusal_line(model, category, *proof), ""]
         refusals = []
     if mode == "baseline":
         if verdict == "ERROR":
@@ -530,8 +618,8 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
         if ai.get("error_request_id"):
             out += ["", f"Request ID of the failed call: {code(ai.get('error_request_id'))}"]
     out.append("")
-    for model, category in refusals:
-        out += [refusal_line(model, category), ""]
+    for model, category, *proof in refusals:
+        out += [refusal_line(model, category, *proof), ""]
     if isinstance(reviews, list) and len(reviews) > 1:
         line = "Reviews in this run: " + ", ".join(
             f"{code(model)} {enum(v, VERDICTS + ('REFUSED',))}" for model, v in reviews) + "."
@@ -576,8 +664,21 @@ def render(summary, repo=None, run_url=None, baseline=None, review_result=None, 
         out += ["### Blocking findings", ""]
         rows = [_blocking_row(i, e, k, repo, head, dep_name)
                 for i, (e, k) in enumerate(entries, 1)]
-        out += table(["#", "Flagged by", "Finding", "Severity", "Location", "AI verdict",
-                      "Confidence"], rows)
+        headers = ["#", "Flagged by", "Finding", "Severity", "Location", "AI verdict",
+                   "Confidence"]
+        results = {n: o for n, o in (proof_results or {}).items()
+                   if _int(n) and isinstance(o, str) and o in PROOF_RESULTS}
+        p_entries, p_written, p_ok, p_not, p_err = proof_cells(ai, results)
+        if p_entries:
+            out += [f"Proof tests: {num(p_written)} written by {code(requested)} and run against "
+                    "the app in a container with no outside network: "
+                    f"{num(p_ok)} confirmed, {num(p_not)} not confirmed, {num(p_err)} error. "
+                    "A proof test passes only when it shows the flaw on the running app. A "
+                    "finding blocks with or without one. The test code is not published.", ""]
+            headers.append("Proof")
+            rows = [row + [_proof_cell(e, p_entries, results)]
+                    for row, (e, _) in zip(rows, entries)]
+        out += table(headers, rows)
         out.append("")
         if any(k != "change" and e.get("verdict") in ("not_reachable", "false_positive")
                for e, k in entries):
@@ -666,6 +767,14 @@ def _load(path, label):
     return data
 
 
+def _load_proof_results(summary_path):
+    """The cleaned results file beside a summary file; {} when it does not exist."""
+    path = os.path.join(os.path.dirname(summary_path), PROOF_RESULTS_NAME)
+    if not os.path.exists(path):
+        return {}
+    return clean_results(_load(path, "proof results"))
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("summary_path", nargs="?", metavar="summary",
@@ -696,9 +805,14 @@ def main(argv=None):
     reviews = [(refusing_model(s) if refusal(s) else s.get("model_requested"),
                 "REFUSED" if refusal(s) else s["verdict"])
                for s in loaded if _known(s)]
-    refusals = [(refusing_model(s), refusal(s)[1]) for s in loaded if refusal(s)]
+    refusals = [_refusal_of(s) for s in loaded if refusal(s)]
+    proof_results = {}
+    for path, s in zip(paths, loaded):
+        if s is summary and summary is not None:
+            proof_results = _load_proof_results(path)
+            break
     sys.stdout.write(render(summary, args.repo, args.run_url, baseline, review_result, reviews,
-                            refusals))
+                            refusals, proof_results))
     sys.stdout.flush()
     if args.verdict_out:
         try:

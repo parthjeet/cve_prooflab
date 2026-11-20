@@ -1,0 +1,66 @@
+{
+ "model_requested": "claude-fable-5-2",
+ "model_returned": "claude-fable-5-2",
+ "final_stop_reason": "end_turn",
+ "base": "830e3b425107e8f9f797c876b41d94273d2f8758",
+ "head": "d55cf8d58f3af4939216e95aa0f6a56c01113d7d",
+ "changed_files": [
+  "app/app.py"
+ ],
+ "limits": {
+  "fail_on": "high",
+  "min_confidence": "medium",
+  "effort": "medium",
+  "triage_min_severity": "medium"
+ },
+ "notice": null,
+ "details": false,
+ "requests": [],
+ "tool_calls": [],
+ "totals": {
+  "requests": 1
+ },
+ "findings": [],
+ "triage": [
+  {
+   "id": "CVE-2026-48817",
+   "package": "webtool",
+   "installed_version": "1.0.0",
+   "fixed_version": "1.0.1",
+   "target": "requirements.txt",
+   "severity": "high",
+   "verdict": "reachable",
+   "confidence": "high",
+   "file": "app/app.py",
+   "line": 23,
+   "ruling": "blocking",
+   "suppression": null,
+   "proof": 1
+  }
+ ],
+ "scan": [],
+ "expired_suppressions": [],
+ "verdict": "ERROR",
+ "error": "model refused (category: cyber)",
+ "error_request_id": null,
+ "proof": {
+  "stage": "refused",
+  "entries": [
+   {
+    "n": 1,
+    "outcome": "refused"
+   }
+  ],
+  "requests": [
+   {
+    "request_id": "req_f1",
+    "stop_reason": "refusal",
+    "stop_category": "cyber",
+    "usage": {}
+   }
+  ],
+  "totals": {
+   "requests": 1
+  }
+ }
+}
